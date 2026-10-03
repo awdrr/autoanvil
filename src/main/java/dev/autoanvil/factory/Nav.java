@@ -63,6 +63,7 @@ public final class Nav {
 	 */
 	public static List<Vec3> plan(List<Vec3> route, Vec3 from, Vec3 to, BiPredicate<Vec3, Vec3> clear) {
 		if (route.size() < 2 || clear.test(from, to)) return List.of(to);
+		route = refine(route, 2.0); // extra points so a shortcut can join the walkway part way along a long stretch
 		Proj pf = project(route, from), pt = project(route, to);
 		List<Vec3> nodes = new ArrayList<>(List.of(from, to));
 		nodes.addAll(route);
@@ -113,6 +114,18 @@ public final class Nav {
 			if (horiz(q, last) > 0.05 || q == to) out.add(q);
 			last = q;
 		}
+		return out;
+	}
+
+	/** The route with extra points every {@code step} blocks or less along each stretch. */
+	static List<Vec3> refine(List<Vec3> route, double step) {
+		List<Vec3> out = new ArrayList<>();
+		for (int i = 0; i + 1 < route.size(); i++) {
+			Vec3 a = route.get(i), b = route.get(i + 1);
+			int k = Math.max(1, (int) Math.ceil(horiz(a, b) / step));
+			for (int j = 0; j < k; j++) out.add(a.lerp(b, (double) j / k));
+		}
+		out.add(route.get(route.size() - 1));
 		return out;
 	}
 

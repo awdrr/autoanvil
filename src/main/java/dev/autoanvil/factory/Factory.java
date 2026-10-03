@@ -141,6 +141,8 @@ public final class Factory {
 	public static final List<String> decisions = new ArrayList<>();
 	/** Biggest batch combined at the anvil, per item (the test reads it). */
 	public static final Map<String, Integer> batchSizes = new HashMap<>();
+	/** How many items each trip to the output chest stored (the test reads it). */
+	public static final List<Integer> storedSizes = new ArrayList<>();
 	/** The input chests had no room for more emerald blocks this run. */
 	private static boolean inputsFull;
 	private static final Set<String> toldBatch = new HashSet<>();
@@ -383,16 +385,25 @@ public final class Factory {
 			return;
 		}
 
+		// 2b. string trading leaves emeralds behind: when the inventory gets cramped, pack them up before going on
+		if (free(inv) < 3 && canMakeRoom(mc, inv, 0)) {
+			makeRoom(mc, sig, 0);
+			return;
+		}
+
 		// 3. finished items go to the output chests
 		Map<Item, Map<Holder<Enchantment>, Integer>> kits = new LinkedHashMap<>();
 		for (String id : cfg.targets.keySet()) kits.put(Kit.item(id), Kit.enchants(mc.level.registryAccess(), Kit.item(id)));
-		boolean anyFinished = false;
+		boolean anyFinished = false, batchOpen = false;
 		for (int i = 0; i < 36; i++) {
 			ItemStack s = inv.getItem(i);
 			Map<Holder<Enchantment>, Integer> kit = kits.get(s.getItem());
-			if (kit != null && Kit.finished(s, kit)) anyFinished = true;
+			if (kit == null || s.getCount() != 1) continue;
+			if (Kit.finished(s, kit)) anyFinished = true;
+			else batchOpen = true;
 		}
-		if (anyFinished) {
+		// the whole batch goes in together, not the first ones while the anvil fetches levels for the rest
+		if (anyFinished && (!batchOpen || free(inv) < 3)) {
 			int[] out = null;
 			for (int[] c : cfg.outputChests) if (!fullOutputs.contains(key(c))) {
 				out = c;
@@ -434,17 +445,32 @@ public final class Factory {
 		// 5. a new batch: gear on the buy list from a villager (ground clean if every sale clashes), the rest crafted
 		if (batch.isEmpty()) {
 			int left = cfg.targets.get(typeId) - cfg.done.getOrDefault(typeId, 0);
-			int perItem = 1 + kit.size();
-			int room = free(inv) + count(inv, s -> s.is(Items.DIAMOND) || s.is(Items.STICK)) / 64 - 7;
 			int lo = Math.min(left, cfg.batchMin(typeId)), hi = Math.min(left, cfg.batchMax(typeId));
-			if (room / perItem < lo && canMakeRoom(mc, inv, keepFor(mc, type, kit, lo))) {
+			List<String> taken = new ArrayList<>();
+			int fits = batchFits(mc, inv, type, kit, hi, taken);
+			if (fits < lo && canMakeRoom(mc, inv, keepFor(mc, type, kit, lo))) {
 				makeRoom(mc, sig, keepFor(mc, type, kit, lo));
 				return;
 			}
-			int want = Math.max(1, Math.min(hi, room / perItem));
+			int want = Math.max(1, Math.min(hi, fits));
 			if (want < lo && toldBatch.add(typeId)) {
-				say("Only room for " + want + " " + new ItemStack(type).getHoverName().getString() + " at a time (you asked for " + lo
-						+ "): empty the inventory of other things.");
+				say("Only room for " + want + " " + new ItemStack(type).getHoverName().getString() + " at a time (you asked for " + lo + ")"
+						+ (taken.isEmpty() ? "" : ": the inventory also holds " + String.join(", ", taken)) + ".");
+			}
+			AutoAnvil.LOGGER.info("[Kit Factory] batch {}: {} (wanted {}-{}, fits {}, free {})", typeId, want, lo, hi, fits, free(inv));
+			// still at the base from the last batch: pack spare emeralds and store full stacks of blocks now, rather than
+			// coming back for it part way through the shopping
+			if (Nav.horiz(p.position(), cfg.baseVec()) < 3 && cfg.craftingTable != null) {
+				int keep = Math.max(keepFor(mc, type, kit, want), cfg.keepEmeralds);
+				if (count(inv, x -> x.is(Items.EMERALD)) - keep >= 192) {
+					plan("pack emeralds", sig, openBlock(FactoryConfig.pos(cfg.craftingTable), "crafting table", x -> x instanceof CraftingScreen),
+							packEmeralds(keep), closeScreens());
+					return;
+				}
+				if (count(inv, x -> x.is(Items.EMERALD_BLOCK)) >= 64 && canStoreBlocks()) {
+					makeRoom(mc, sig, keep);
+					return;
+				}
 			}
 			boolean buys = cfg.buy.contains(typeId);
 			Gear gear = buys ? bestGear(mc, type, kit) : null;
@@ -473,17 +499,29 @@ public final class Factory {
 				for (int i = 0; i < want; i++) fresh.add(new ItemStack(type));
 				if (fetchPlainBooks(mc, kit, fresh, sig)) return;
 				int pay = count(inv, s -> s.is(payA));
-				if (pay < offer.price * want) {
-					if (payA != Items.EMERALD) {
-						fetch(mc, offer.costA, s -> s.is(payA), offer.price * want, sig);
-						return;
-					}
-					// one fisherman visit: emeralds for the gear and all its books, and the levels the anvil will need
-					long all = Math.max((long) offer.price * want, keepFor(mc, type, kit, want));
-					getEmeralds(mc, (int) Math.max(offer.price * want, Math.min(all, pay + roomFor(inv, Items.EMERALD) - 64L * 3)),
-							xpTarget(p, fresh, kit), sig);
+				if (payA != Items.EMERALD && pay < offer.price * want) {
+					fetch(mc, offer.costA, s -> s.is(payA), offer.price * want, sig);
 					return;
 				}
+				// one fisherman visit before the shopping round: emeralds for the gear and every book the batch needs, and
+				// the levels the anvil will want
+				Map<Holder<Enchantment>, Integer> missing = missingBooks(mc, kit, fresh);
+				long gearCost = payA == Items.EMERALD ? (long) offer.price * want : 0;
+				long need = gearCost + booksCost(mc, kit, missing);
+				int emeralds = count(inv, s -> s.is(Items.EMERALD));
+				long target = Math.min(need, emeralds + roomFor(inv, Items.EMERALD) - 64L * 3);
+				if (emeralds < Math.max(target, gearCost)) {
+					int lvl = xpTarget(p, fresh, kit);
+					getEmeralds(mc, (int) Math.max(target, gearCost), p.experienceLevel < lvl ? lvl : 0, sig);
+					return;
+				}
+				// the shopping round, nearest first: the gear, or a librarian with books the batch needs
+				TradeBook.Trader lib = nearestLibrarian(mc, route, kit, missing);
+				if (lib != null && lib != gear.trader() && distAlong(mc, route, lib) + 0.5 < distAlong(mc, route, gear.trader())
+						&& free(inv) > want && planBooksAt(mc, sig, route, lib, kit, missing, gearCost)) {
+					return;
+				}
+				pay = count(inv, s -> s.is(payA));
 				int n = Math.min(want, pay / Math.max(1, offer.price));
 				if (payB != null) n = Math.min(n, count(inv, s -> s.is(payB) && !s.isEnchanted()) / Math.max(1, offer.costBCount));
 				n = Math.min(n, free(inv));
@@ -564,49 +602,24 @@ public final class Factory {
 		int xpTarget = xpTarget(p, items, kit);
 
 		// 6. books still missing for the batch: the nearest librarian first, everything it sells that's needed in one visit
-		Map<Holder<Enchantment>, Integer> missing = new LinkedHashMap<>();
-		long emeraldsNeeded = 0;
-		for (var en : kit.entrySet()) {
-			int lacking = 0;
-			for (ItemStack it : items) if (dev.autoanvil.run.Analysis.enchantments(it).getLevel(en.getKey()) < en.getValue()) lacking++;
-			int miss = Math.max(0, lacking - count(inv, x -> Kit.bookHas(x, en.getKey(), en.getValue())));
-			if (miss == 0) continue;
-			var offer = TradeBook.get().cheapestBook(en.getKey(), en.getValue(), around(mc));
-			if (offer == null) {
-				stop("The librarian selling " + dev.autoanvil.ui.Panel.name(en.getKey(), en.getValue()) + " isn't here any more - run /kitfactory survey");
+		Map<Holder<Enchantment>, Integer> missing = missingBooks(mc, kit, items);
+		for (var e : missing.keySet()) {
+			if (TradeBook.get().cheapestBook(e, kit.get(e), around(mc)) == null) {
+				stop("The librarian selling " + dev.autoanvil.ui.Panel.name(e, kit.get(e)) + " isn't here any more - run /kitfactory survey");
 				return;
 			}
-			missing.put(en.getKey(), miss);
-			if (offer.getValue().costA.equals("minecraft:emerald")) emeraldsNeeded += (long) miss * offer.getValue().price;
 		}
 		if (!missing.isEmpty()) {
 			if (fetchPlainBooks(mc, kit, items, sig)) return;
-			// the librarian nearest along the walkway, and what it sells of what's missing
-			double here = Nav.project(route, p.position()).along();
-			TradeBook.Trader nearest = null;
-			double best = Double.MAX_VALUE;
-			for (var en : missing.keySet()) {
-				TradeBook.Trader t = TradeBook.get().cheapestBook(en, kit.get(en), around(mc)).getKey();
-				double d = Math.abs(Nav.project(route, spot(mc, route, t)).along() - here);
-				if (d < best) {
-					best = d;
-					nearest = t;
-				}
-			}
-			TradeBook.Trader trader = nearest;
-			List<Holder<Enchantment>> atTrader = new ArrayList<>();
+			long emeraldsNeeded = booksCost(mc, kit, missing);
+			TradeBook.Trader trader = nearestLibrarian(mc, route, kit, missing);
 			long visitCost = 0;
 			int visitBooks = 0;
 			for (var en : missing.entrySet()) {
 				var o = TradeBook.get().cheapestBook(en.getKey(), kit.get(en.getKey()), around(mc));
 				if (o.getKey() != trader) continue;
-				atTrader.add(en.getKey());
 				visitBooks += en.getValue();
 				if (o.getValue().costA.equals("minecraft:emerald")) visitCost += (long) en.getValue() * o.getValue().price;
-				else if (count(inv, x -> x.is(Kit.item(o.getValue().costA))) < o.getValue().price) {
-					fetch(mc, o.getValue().costA, x -> x.is(Kit.item(o.getValue().costA)), en.getValue() * o.getValue().price, sig);
-					return;
-				}
 			}
 			// emeralds for every missing book, and the anvil's levels, in one fisherman visit
 			int pay = count(inv, x -> x.is(Items.EMERALD));
@@ -619,36 +632,7 @@ public final class Factory {
 				makeRoom(mc, sig, (int) emeraldsNeeded);
 				return;
 			}
-			if (free(inv) <= 0) {
-				makeRoom(mc, sig, (int) emeraldsNeeded);
-				return;
-			}
-			List<Step> st = new ArrayList<>(List.of(
-					walkTo(spot(mc, route, trader), "Walking to " + trader.label(), eyesOf(UUID.fromString(trader.uuid))),
-					stepUp(UUID.fromString(trader.uuid)),
-					openVillager(UUID.fromString(trader.uuid))));
-			int slots = free(inv), money = pay;
-			int bookStock = count(inv, Factory::plainBook);
-			StringBuilder what = new StringBuilder();
-			for (Holder<Enchantment> e : atTrader) {
-				TradeBook.Offer o = TradeBook.get().cheapestBook(e, kit.get(e), around(mc)).getValue();
-				int n = Math.min(missing.get(e), slots);
-				if (o.costA.equals("minecraft:emerald")) n = Math.min(n, money / Math.max(1, o.price));
-				if (o.costB.equals("minecraft:book")) n = Math.min(n, bookStock / Math.max(1, o.costBCount));
-				if (n <= 0) continue;
-				slots -= n;
-				if (o.costA.equals("minecraft:emerald")) money -= n * o.price;
-				if (o.costB.equals("minecraft:book")) bookStock -= n * o.costBCount;
-				int lv = kit.get(e);
-				st.add(buy(trader, o, n, x -> Kit.isBookOf(x, e, lv)));
-				what.append(' ').append(o.enchant);
-			}
-			if (st.size() == 3) {
-				makeRoom(mc, sig, (int) emeraldsNeeded);
-				return;
-			}
-			st.add(closeScreens());
-			plan("buy" + what, sig, st.toArray(new Step[0]));
+			if (free(inv) <= 0 || !planBooksAt(mc, sig, route, trader, kit, missing, 0)) makeRoom(mc, sig, (int) emeraldsNeeded);
 			return;
 		}
 
@@ -797,6 +781,12 @@ public final class Factory {
 			makeRoom(mc, sig, targetEmeralds);
 			return;
 		}
+		if (cfg.stringInGui && count(inv, s -> s.is(Items.STRING)) < offer.price && free(inv) < 3) {
+			// the string command needs free slots to put the string in
+			if (canMakeRoom(mc, inv, targetEmeralds)) makeRoom(mc, sig, targetEmeralds);
+			else stop("Inventory too full to receive string: empty some slots.");
+			return;
+		}
 		List<Vec3> route = cfg.route();
 		plan("string trade", sig,
 				walkTo(spot(mc, route, entry.getKey()), "Walking to " + entry.getKey().label(), eyesOf(UUID.fromString(entry.getKey().uuid))),
@@ -878,6 +868,12 @@ public final class Factory {
 				}
 				if (waypoints == null) {
 					waypoints = new ArrayList<>(direct ? List.of(target) : Nav.plan(cfg.route(), pos, target, (a, b) -> clearLine(mc, a, b)));
+					if (waypoints.size() > 1) {
+						StringBuilder sb = new StringBuilder();
+						for (Vec3 w : waypoints) sb.append(String.format(" (%.1f, %.1f)", w.x, w.z));
+						AutoAnvil.LOGGER.info("[Kit Factory] path from ({}, {}) via{} - straight there: {}", String.format("%.1f", pos.x),
+								String.format("%.1f", pos.z), sb, lineBlock(mc, pos, target));
+					}
 				}
 				while (waypoints.size() > 1 && Nav.horiz(pos, waypoints.get(0)) < 0.6) waypoints.remove(0);
 				Vec3 next = alongOnly ? Nav.next(cfg.route(), pos, target) : waypoints.get(0);
@@ -1153,6 +1149,7 @@ public final class Factory {
 				if (moved > 0) {
 					failures = 0;
 					say("Stored " + moved + " finished item" + (moved == 1 ? "" : "s") + ". " + progress());
+					storedSizes.add(moved);
 				}
 				return Status.DONE;
 			}
@@ -1448,6 +1445,118 @@ public final class Factory {
 		};
 	}
 
+	/** One-enchantment books still to buy for these items, after the ones already in the inventory. */
+	static Map<Holder<Enchantment>, Integer> missingBooks(Minecraft mc, Map<Holder<Enchantment>, Integer> kit, List<ItemStack> items) {
+		Inventory inv = mc.player.getInventory();
+		Map<Holder<Enchantment>, Integer> out = new LinkedHashMap<>();
+		for (var en : kit.entrySet()) {
+			int lacking = 0;
+			for (ItemStack it : items) if (dev.autoanvil.run.Analysis.enchantments(it).getLevel(en.getKey()) < en.getValue()) lacking++;
+			int miss = lacking - count(inv, x -> Kit.bookHas(x, en.getKey(), en.getValue()));
+			if (miss > 0) out.put(en.getKey(), miss);
+		}
+		return out;
+	}
+
+	/** Emeralds those books cost at the cheapest librarians. */
+	static long booksCost(Minecraft mc, Map<Holder<Enchantment>, Integer> kit, Map<Holder<Enchantment>, Integer> missing) {
+		long sum = 0;
+		for (var en : missing.entrySet()) {
+			var o = TradeBook.get().cheapestBook(en.getKey(), kit.get(en.getKey()), around(mc));
+			if (o != null && o.getValue().costA.equals("minecraft:emerald")) sum += (long) en.getValue() * o.getValue().price;
+		}
+		return sum;
+	}
+
+	/** How far along the walkway a trader is from the player. */
+	static double distAlong(Minecraft mc, List<Vec3> route, TradeBook.Trader t) {
+		return Math.abs(Nav.project(route, spot(mc, route, t)).along() - Nav.project(route, mc.player.position()).along());
+	}
+
+	/** The librarian nearest along the walkway that's the cheapest for one of the missing books. */
+	static TradeBook.Trader nearestLibrarian(Minecraft mc, List<Vec3> route, Map<Holder<Enchantment>, Integer> kit,
+			Map<Holder<Enchantment>, Integer> missing) {
+		TradeBook.Trader best = null;
+		double bestD = Double.MAX_VALUE;
+		for (var e : missing.keySet()) {
+			var o = TradeBook.get().cheapestBook(e, kit.get(e), around(mc));
+			if (o == null) continue;
+			double d = distAlong(mc, route, o.getKey());
+			if (d < bestD) {
+				bestD = d;
+				best = o.getKey();
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * One visit to a librarian: every missing book it's the cheapest for, as many as the emeralds (beyond
+	 * {@code reserve}), plain books and free slots allow. False if it can't buy anything there.
+	 */
+	static boolean planBooksAt(Minecraft mc, long sig, List<Vec3> route, TradeBook.Trader trader, Map<Holder<Enchantment>, Integer> kit,
+			Map<Holder<Enchantment>, Integer> missing, long reserve) {
+		Inventory inv = mc.player.getInventory();
+		UUID id = UUID.fromString(trader.uuid);
+		List<Step> st = new ArrayList<>(List.of(walkTo(spot(mc, route, trader), "Walking to " + trader.label(), eyesOf(id)), stepUp(id), openVillager(id)));
+		long money = count(inv, x -> x.is(Items.EMERALD)) - reserve;
+		int slots = free(inv), bookStock = count(inv, Factory::plainBook);
+		StringBuilder what = new StringBuilder();
+		for (var en : missing.entrySet()) {
+			var entry = TradeBook.get().cheapestBook(en.getKey(), kit.get(en.getKey()), around(mc));
+			if (entry == null || entry.getKey() != trader) continue;
+			TradeBook.Offer o = entry.getValue();
+			boolean emerald = o.costA.equals("minecraft:emerald"), book = o.costB.equals("minecraft:book");
+			int n = Math.min(en.getValue(), slots);
+			if (emerald) n = (int) Math.min(n, money / Math.max(1, o.price));
+			else n = Math.min(n, count(inv, x -> x.is(Kit.item(o.costA))) / Math.max(1, o.price));
+			if (book) n = Math.min(n, bookStock / Math.max(1, o.costBCount));
+			if (n <= 0) continue;
+			slots -= n;
+			if (emerald) money -= (long) n * o.price;
+			if (book) bookStock -= n * o.costBCount;
+			Holder<Enchantment> e = en.getKey();
+			int lv = kit.get(e);
+			st.add(buy(trader, o, n, x -> Kit.isBookOf(x, e, lv)));
+			what.append(' ').append(o.enchant);
+		}
+		if (st.size() == 3) return false;
+		st.add(closeScreens());
+		plan("buy" + what, sig, st.toArray(new Step[0]));
+		return true;
+	}
+
+	/**
+	 * The most of an item, up to {@code hi}, whose batch fits once all its books are bought: the items, a slot per
+	 * book, whatever else is in the inventory (named in {@code taken}), emeralds beyond what the batch will spend, and
+	 * a slot each for the emeralds being spent and the plain books.
+	 */
+	static int batchFits(Minecraft mc, Inventory inv, Item type, Map<Holder<Enchantment>, Integer> kit, int hi, List<String> taken) {
+		boolean crafted = !cfg.buy.contains(Kit.id(type));
+		int other = 0;
+		Map<String, Integer> names = new LinkedHashMap<>();
+		for (int i = 0; i < 36; i++) {
+			ItemStack s = inv.getItem(i);
+			if (s.isEmpty() || s.is(Items.EMERALD) || plainBook(s) || crafted && (s.is(Items.DIAMOND) || s.is(Items.STICK))) continue;
+			boolean kitBook = false;
+			if (s.is(Items.ENCHANTED_BOOK)) for (var en : kit.entrySet()) kitBook |= Kit.bookHas(s, en.getKey(), en.getValue());
+			if (kitBook) continue;
+			other++;
+			names.merge(s.getHoverName().getString(), 1, Integer::sum);
+		}
+		for (var en : names.entrySet()) taken.add(en.getValue() > 1 ? en.getValue() + " slots of " + en.getKey() : en.getKey());
+		long unit = keepFor(mc, type, kit, 1);
+		int loose = count(inv, x -> x.is(Items.EMERALD));
+		int fit = 0;
+		for (int n = 1; n <= hi; n++) {
+			int books = 0;
+			for (var en : kit.entrySet()) books += Math.max(n, count(inv, x -> Kit.bookHas(x, en.getKey(), en.getValue())));
+			int spare = (int) Math.ceil(Math.max(0, loose - unit * n) / 64.0);
+			if (n + books + other + spare + 2 <= 36) fit = n;
+		}
+		return fit;
+	}
+
 	/** Emeralds the next {@code n} of this item will cost: its books (and the item, if bought). */
 	static int keepFor(Minecraft mc, Item type, Map<Holder<Enchantment>, Integer> kit, int n) {
 		long sum = 0;
@@ -1649,7 +1758,7 @@ public final class Factory {
 	static Step tradeString(TradeBook.Offer offer, int targetEmeralds, int targetLevel) {
 		return new Step("Trading string") {
 			long pendingSince, lastSig = -1;
-			int stringAtAsk, still;
+			int stringAtAsk, still, waitedForString;
 
 			Status run(Minecraft mc) {
 				if (!(mc.screen instanceof MerchantScreen ms)) return fail("The trading screen closed");
@@ -1702,13 +1811,15 @@ public final class Factory {
 					return Status.RUNNING;
 				}
 				if (string < offer.price) {
-					if (met || !cfg.stringInGui || now < commandCooldownUntil) {
+					if (met || !cfg.stringInGui || now < commandCooldownUntil || pendingSince == 0 && free(inv) < 3) {
 						failures = 0;
-						return Status.DONE; // decide gets string the slow way / waits out the cooldown
+						return Status.DONE; // decide gets string the slow way, waits out the cooldown, or makes room for it
 					}
+					if (++waitedForString > 20 * 10) return fail("No string came from /" + cfg.stringCommand);
 					status = "Waiting for string";
 					return Status.RUNNING;
 				}
+				waitedForString = 0;
 				if (inSlot > 0 && roomFor(inv, Items.STRING) < inSlot) {
 					// every slot is full (the string command fills them all), so the trade button can't put the
 					// leftover back: top the trade slot up from a stack by hand and put the rest where it came from
@@ -2031,17 +2142,40 @@ public final class Factory {
 		String k = String.format("%.2f,%.2f,%.2f>%.2f,%.2f,%.2f", a.x, a.y, a.z, b.x, b.y, b.z);
 		Boolean c = clearCache.get(k);
 		if (c != null) return c;
-		c = Math.abs(a.y - b.y) <= 0.6;
-		double len = Nav.horiz(a, b);
-		int n = Math.max(1, (int) Math.ceil(len / 0.3));
-		for (int i = 0; i <= n && c; i++) {
-			Vec3 p = a.lerp(b, (double) i / n);
-			AABB body = mc.player.getDimensions(Pose.STANDING).makeBoundingBox(p).inflate(0.1, -0.05, 0.1).move(0, 0.05, 0);
-			AABB under = new AABB(p.x - 0.25, p.y - 0.3, p.z - 0.25, p.x + 0.25, p.y - 0.01, p.z + 0.25);
-			if (!mc.level.noCollision(mc.player, body) || mc.level.noCollision(mc.player, under)) c = false;
-		}
+		c = lineBlock(mc, a, b) == null;
 		clearCache.put(k, c);
 		return c;
+	}
+
+	/**
+	 * Why the player can't walk straight from a to b, or null if it can: room for the body all the way (a little to
+	 * spare), floor under it, steps of at most 0.6 up or down (carpets, slabs). The ends themselves are where the
+	 * player stands, so they don't count.
+	 */
+	static String lineBlock(Minecraft mc, Vec3 a, Vec3 b) {
+		double len = Nav.horiz(a, b);
+		int n = Math.max(1, (int) Math.ceil(len / 0.3));
+		double y = a.y;
+		for (int i = 1; i < n; i++) {
+			double at = len * i / n;
+			if (at < 0.3 || len - at < 0.3) continue;
+			Vec3 p = a.lerp(b, (double) i / n);
+			Double fy = standAt(mc, p.x, y, p.z);
+			if (fy == null) return "blocked at " + BlockPos.containing(p.x, y, p.z).toShortString();
+			y = fy;
+		}
+		return Math.abs(y - b.y) > 0.6 ? "ends " + String.format("%.1f", y - b.y) + " blocks off the target height" : null;
+	}
+
+	/** Height the player can stand at near (x, y, z): y itself, or a step of at most 0.56 up or down; null if none. */
+	static Double standAt(Minecraft mc, double x, double y, double z) {
+		for (int k = 0; k <= 18; k++) {
+			double fy = y + (k % 2 == 1 ? 1 : -1) * ((k + 1) / 2) * 0.0625;
+			AABB body = new AABB(x - 0.35, fy + 0.01, z - 0.35, x + 0.35, fy + 1.8, z + 0.35);
+			AABB under = new AABB(x - 0.25, fy - 0.2, z - 0.25, x + 0.25, fy + 0.005, z + 0.25);
+			if (mc.level.noCollision(mc.player, body) && !mc.level.noCollision(mc.player, under)) return fy;
+		}
+		return null;
 	}
 
 	static boolean inReach(Minecraft mc, Vec3 eye, AABB box) {

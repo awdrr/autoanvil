@@ -403,14 +403,19 @@ final class FactoryTest {
 					check(emeraldBlocks(mc) >= 22, "spare emerald blocks stored in the input chest, the 2 that were there kept (" + emeraldBlocks(mc) + ")");
 					check(Factory.batchSizes.getOrDefault("minecraft:diamond_helmet", 0) == 2,
 							"both helmets enchanted together although the inventory started full of emeralds (" + Factory.batchSizes + ")");
+					check(Factory.storedSizes.equals(List.of(2, 1, 1)), "each trip to the output chest stored a whole batch " + Factory.storedSizes);
 					check(strafeTicks > 20, "walked to villagers strafing with A/D while looking at them (" + strafeTicks + " ticks)");
 					check(Factory.ground >= 1, "the Bane of Arthropods sword was ground clean before enchanting (" + Factory.ground + ")");
 					int g = Factory.decisions.indexOf("grind minecraft:diamond_sword");
 					String after = g >= 0 && g + 1 < Factory.decisions.size() ? Factory.decisions.get(g + 1) : "-";
-					boolean bookBefore = false;
-					for (int i = 0; i < g; i++) bookBefore |= Factory.decisions.get(i).contains("minecraft:sharpness") && i > Factory.decisions.indexOf("buy minecraft:diamond_sword");
-					check(bookBefore && after.equals("anvil minecraft:diamond_sword"),
-							"sword: books bought first, then ground at the base right before the anvil, one trip (" + after + ")");
+					int helmetsDone = Factory.decisions.indexOf("deposit");
+					boolean books = false, gear = false;
+					for (int i = helmetsDone; i >= 0 && i < g; i++) {
+						books |= Factory.decisions.get(i).contains("minecraft:sharpness");
+						gear |= Factory.decisions.get(i).equals("buy minecraft:diamond_sword");
+					}
+					check(books && gear && after.equals("anvil minecraft:diamond_sword"),
+							"sword: the sword and all its books bought on one round, then ground at the base right before the anvil (" + after + ")");
 					int spears = 0;
 					for (ItemStack s : out) if (s.is(Items.DIAMOND_SPEAR) && lvl(mc, s, Enchantments.SHARPNESS) == 5 && lvl(mc, s, Enchantments.UNBREAKING) == 3
 							&& lvl(mc, s, Enchantments.MENDING) == 1) spears++;
@@ -473,7 +478,7 @@ final class FactoryTest {
 				case 10 -> { // full of emeralds again, and spare blocks thrown at the drop spot this time
 					if (in() == 2) cmd(mc, "kitfactory spare drop");
 					if (in() < 10) return;
-					fillWithEmeralds(mc);
+					fillWithEmeralds(mc, 26, 8); // too many blocks to fit two pickaxes and their books: some get thrown
 					blocksBefore = emeraldBlocks(mc);
 					cmd(mc, "kitfactory start");
 					next();
@@ -507,7 +512,7 @@ final class FactoryTest {
 						}
 						return n;
 					});
-					check(thrown >= 64 * 20, "spare emerald blocks thrown at the drop spot (" + thrown + ")");
+					check(thrown >= 64 * 26, "spare emerald blocks thrown at the drop spot (" + thrown + ")");
 					check(emeraldBlocks(mc) == blocksBefore, "drop mode: no blocks put in or taken from the chest (" + emeraldBlocks(mc) + " vs " + blocksBefore + ")");
 					finish(mc);
 				}
@@ -518,9 +523,13 @@ final class FactoryTest {
 
 		/** 20 stacks of emerald blocks and 12 of emeralds into the free slots, like after a lot of string trading. */
 		void fillWithEmeralds(Minecraft mc) {
+			fillWithEmeralds(mc, 20, 12);
+		}
+
+		void fillWithEmeralds(Minecraft mc, int blockStacks, int emeraldStacks) {
 			server(mc, () -> {
 				ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
-				int blocks = 20, ems = 12;
+				int blocks = blockStacks, ems = emeraldStacks;
 				for (int i = 0; i < 36; i++) {
 					if (!p.getInventory().getItem(i).isEmpty()) continue;
 					if (blocks > 0) {

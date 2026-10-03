@@ -44,6 +44,26 @@ class NavTest {
 		assertEquals(to, path.get(path.size() - 1));
 	}
 
+	/** The real hall: base north of the walkway, the walkway's first point east of the base, villagers west. */
+	static final List<Vec3> HALL = List.of(new Vec3(-7389.0, 128.06, 9329.5), new Vec3(-7383.4, 128, 9333.7), new Vec3(-7425.5, 128, 9333.7));
+
+	@Test
+	void baseToAVillagerDoesNotGoViaTheWalkwayStart() {
+		Vec3 base = HALL.get(0), armorer = new Vec3(-7396, 128, 9333.7);
+		// something in the way of the straight line (a chest, a post): around it, joining the walkway near the villager
+		Vec3 post = new Vec3(-7392.5, 128, 9331.6);
+		List<Vec3> path = Nav.plan(HALL, base, armorer, (a, b) -> distToSegment(post, a, b) > 0.8);
+		double d = length(base, path);
+		assertTrue(d < 11, "around the post, not via the walkway start at -7383: " + path + " = " + d);
+		for (Vec3 p : path) assertTrue(p.x < -7386, "never goes east to the walkway start: " + path);
+	}
+
+	static double distToSegment(Vec3 p, Vec3 a, Vec3 b) {
+		double dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+		double t = l2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / l2));
+		return Nav.horiz(p, new Vec3(a.x + t * dx, p.y, a.z + t * dz));
+	}
+
 	@Test
 	void sameSegmentStaysOnIt() {
 		Vec3 from = new Vec3(0, 0, 3), to = new Vec3(0, 0, 9);

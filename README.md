@@ -104,8 +104,11 @@ in the input chest. Pickaxes take Silk Touch over Fortune.
 **Fewer trips**: everything for a batch is bought on one walk out, then it's back to the base once. Villager gear
 with a clashing enchantment is bought, then all its books, and only then ground clean at the base, right before
 the anvil. The plain books for the whole batch are taken in one go, emeralds and levels come from one
-fisherman visit, librarians are visited nearest first, and everything one librarian sells that's needed is
-bought in the same visit. The one exception is
+fisherman visit, librarians and the gear villager are visited nearest first in one sweep, and everything one
+librarian sells that's needed is bought in the same visit. Spare emeralds are packed (and full stacks of blocks
+stored) before it leaves the base. A batch is stored only once all of it is done, even when the anvil has to go
+back to the fisherman for more levels part way through. Walking cuts straight across clear floor and can join the
+walkway part way along; every detour is written to the game log (`path from ... straight there: blocked at x, y, z`). The one exception is
 `stringInGui` (on by default): to keep the fisherman's screen open, the mod sends `/string` itself,
 because you can't type in chat with a screen open. Set it to `false` to have it close the screen and type
 the command into chat instead, which is slower.
