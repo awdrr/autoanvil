@@ -474,7 +474,7 @@ final class SelfTest {
 						new ItemStack(Items.DIAMOND_PICKAXE),
 						book(mc, Enchantments.SHARPNESS, 5), book(mc, Enchantments.SHARPNESS, 5), book(mc, Enchantments.LOOTING, 3),
 						book(mc, Enchantments.FIRE_ASPECT, 2), book(mc, Enchantments.SWEEPING_EDGE, 3), book(mc, Enchantments.LUNGE, 3),
-						book(mc, Enchantments.EFFICIENCY, 5), book(mc, Enchantments.FORTUNE, 3),
+						book(mc, Enchantments.EFFICIENCY, 5), book(mc, Enchantments.SILK_TOUCH, 1), book(mc, Enchantments.FORTUNE, 3),
 						book(mc, Enchantments.UNBREAKING, 3), book(mc, Enchantments.UNBREAKING, 3), book(mc, Enchantments.UNBREAKING, 3),
 						book(mc, Enchantments.MENDING, 1), book(mc, Enchantments.MENDING, 1), book(mc, Enchantments.MENDING, 1)));
 				return true;
@@ -506,9 +506,12 @@ final class SelfTest {
 				check(level(mc, spear, Enchantments.LUNGE) == 3 && level(mc, spear, Enchantments.SHARPNESS) == 5
 						&& level(mc, spear, Enchantments.UNBREAKING) == 3 && level(mc, spear, Enchantments.MENDING) == 1,
 						"S4 spear: Lunge III, Sharpness V, Unbreaking III, Mending");
-				check(level(mc, pick, Enchantments.EFFICIENCY) == 5 && level(mc, pick, Enchantments.FORTUNE) == 3
+				check(level(mc, pick, Enchantments.EFFICIENCY) == 5 && level(mc, pick, Enchantments.SILK_TOUCH) == 1 && level(mc, pick, Enchantments.FORTUNE) == 0
 						&& level(mc, pick, Enchantments.UNBREAKING) == 3 && level(mc, pick, Enchantments.MENDING) == 1,
-						"S4 pickaxe: Efficiency V, Fortune III, Unbreaking III, Mending");
+						"S4 pickaxe: Efficiency V, Silk Touch (over Fortune), Unbreaking III, Mending");
+				boolean fortuneLeft = false;
+				for (ItemStack s : inv) fortuneLeft |= s.is(Items.ENCHANTED_BOOK) && level(mc, s, Enchantments.FORTUNE) == 3;
+				check(fortuneLeft, "S4 the Fortune book is left unused");
 				check(EnchantmentHelper.getEnchantmentsForCrafting(find(inv, Items.IRON_AXE)).isEmpty(), "S4 iron axe untouched");
 				return true;
 			});

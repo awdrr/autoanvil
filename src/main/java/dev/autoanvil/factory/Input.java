@@ -32,6 +32,27 @@ public final class Input {
 		return click(s, s.leftPos + slot.x + 8, s.topPos + slot.y + 8, button, shift);
 	}
 
+	/** Screen position of a slot's centre. */
+	public static double[] slotCentre(AbstractContainerScreen<?> s, Slot slot) {
+		return new double[] {s.leftPos + slot.x + 8, s.topPos + slot.y + 8};
+	}
+
+	/**
+	 * Press on the first point, drag the mouse through all of them, release on the last: what a player does to spread
+	 * the stack on the cursor evenly over several slots.
+	 */
+	public static void drag(Screen s, int button, java.util.List<double[]> points) {
+		double[] a = points.get(0);
+		s.mouseClicked(new MouseButtonEvent(a[0], a[1], new MouseButtonInfo(button, 0)), false);
+		double px = a[0], py = a[1];
+		for (double[] p : points) {
+			s.mouseDragged(new MouseButtonEvent(p[0], p[1], new MouseButtonInfo(button, 0)), p[0] - px, p[1] - py);
+			px = p[0];
+			py = p[1];
+		}
+		s.mouseReleased(new MouseButtonEvent(px, py, new MouseButtonInfo(button, 0)));
+	}
+
 	/** Press and release a mouse button at a screen position. */
 	public static boolean click(Screen s, double x, double y, int button, boolean shift) {
 		MouseButtonEvent ev = new MouseButtonEvent(x, y, new MouseButtonInfo(button, shift ? GLFW.GLFW_MOD_SHIFT : 0));
@@ -69,7 +90,20 @@ public final class Input {
 
 	/** Holds or releases the forward key. Refused while a screen is open: no walking in menus. */
 	public static void forward(Minecraft mc, boolean down) {
-		mc.options.keyUp.setDown(down && mc.screen == null);
+		move(mc, down ? 0 : null);
+	}
+
+	/**
+	 * Hold the movement keys that walk {@code rel} degrees off the way the player faces (0 W, 45 W+D, 90 D, 135 S+D,
+	 * 180 S, -135 S+A, -90 A, -45 W+A), or release them all (null). Refused while a screen is open.
+	 */
+	public static void move(Minecraft mc, Integer rel) {
+		boolean on = rel != null && mc.screen == null;
+		int r = on ? Math.floorMod(rel, 360) : -1;
+		mc.options.keyUp.setDown(r == 0 || r == 45 || r == 315);
+		mc.options.keyRight.setDown(r == 45 || r == 90 || r == 135);
+		mc.options.keyDown.setDown(r == 135 || r == 180 || r == 225);
+		mc.options.keyLeft.setDown(r == 225 || r == 270 || r == 315);
 	}
 
 	public static void releaseMovement(Minecraft mc) {

@@ -90,7 +90,16 @@ everything on the anvil with Auto Anvil and stores the finished items in your ou
 item by default. `/kitfactory items` changes the amount per item and whether each one is bought or crafted.
 
 It only presses keys and clicks like a player would: walking, turning, right-clicking villagers and blocks,
-and clicking slots. It never walks or turns while a screen is open. The one exception is
+and clicking slots. It never walks or turns while a screen is open. Walking to a villager, it keeps looking at
+it and strafes (A/D, or W/S plus A/D) instead of turning away to walk. Where the floor between two walkway
+points is clear it cuts straight across, so a walkway that loops round the hall isn't walked all the way round.
+
+**Batches**: armor pieces are made, enchanted and stored 3 at a time, swords, axes and spears at least 2,
+pickaxes at least 3 (`batchMin` / `batchMax`). To fit a batch it first clears the inventory: leftover string
+is traded away, spare emeralds are packed into emerald blocks at the crafting table (by dragging stacks across
+the grid, like a player), and the blocks go into the input chest, or are thrown at the drop spot once that's
+full (`/kitfactory spare drop` throws them every time). After crafting, leftover diamonds and sticks go back
+in the input chest. Pickaxes take Silk Touch over Fortune. The one exception is
 `stringInGui` (on by default): to keep the fisherman's screen open, the mod sends `/string` itself,
 because you can't type in chat with a screen open. Set it to `false` to have it close the screen and type
 the command into chat instead, which is slower.
@@ -104,9 +113,11 @@ the command into chat instead, which is slower.
   item has one that clashes with yours (Fire Protection vs Protection IV, Bane vs Sharpness), it buys the
   cheapest and grinds it clean first. Sales without a clash are preferred.
 - **Input chest(s)**: a chest or double chest of **plain books**, plus diamonds and sticks for whatever is
-  crafted. 27 spears need 27 diamonds and 54 sticks. No emeralds needed. When the inventory fills up with
-  emeralds from string trading, it puts the spare ones here, so leave some room. A spare anvil is optional:
-  anvils don't break on your server.
+  crafted. 27 spears need 27 diamonds and 54 sticks. No emeralds needed. Spare emeralds from string trading
+  are packed into blocks and stored here, so leave some room. A spare anvil is optional: anvils don't break
+  on your server.
+- **Drop spot** (optional): stand next to the walkway, look where spare emerald blocks should go (lava, a
+  cactus, off an edge) and type `/kitfactory dropspot`. Used once the input chests are full.
 - **Output chest(s)**: empty, with room for all 216 items. Gear doesn't stack, so that's 4 double chests.
 - **Walkway**: a clear path along the villagers. Walk it down the middle and add a point at each corner and at
   the far end. A villager more than 3 blocks from that line is reached by stepping up to 2.5 blocks off it,
@@ -135,7 +146,7 @@ The same per-item settings as commands: `buy <item> [n]` and `craft <item> [n]` 
 crafts 10 diamond pickaxes from the chest instead of buying them), `set <item|all> <n>` (amount only).
 Item names: helmet, chestplate, leggings, boots, sword, pickaxe, axe, spear.
 
-Also: `status`, `reset` (count from 0 again),
+Also: `status`, `reset` (count from 0 again), `dropspot` / `dropspot clear`, `spare chest|drop`,
 `forget` (drop all recorded trades), `string <command>` (if your server's string command has another name).
 There is also a "Start / stop Kit Factory" key in Controls (unbound by default).
 
@@ -149,7 +160,11 @@ There is also a "Start / stop Kit Factory" key in Controls (unbound by default).
 | `stringInGui` | `true` | send it with the fisherman's screen open (see above) |
 | `stringAskBelow` | `128` | ask for more string when less than this is left |
 | `xpLevel` | `30` | trade XP up to this level, spend it at the anvil, come back for more |
-| `maxBatch` | `4` | most items of one kind per trip |
+| `batchMin` | armor 3, sword/axe/spear 2, pickaxe 3 | fewest of an item worked on together; room is made for them |
+| `batchMax` | armor 3, others 4 | most of an item worked on together |
+| `keepEmeralds` | `192` | loose emeralds kept when packing the rest into blocks (more if the next books cost more) |
+| `spareEmeralds` | `"chest"` | `"chest"`: store blocks in the input chests, thrown at the drop spot once full; `"drop"`: always thrown |
+| `dropSpot` | none | set with `/kitfactory dropspot` |
 
 ## Building / testing
 

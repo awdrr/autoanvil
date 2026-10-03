@@ -83,7 +83,7 @@ final class FactoryTest {
 		final List<String> failures = new ArrayList<>();
 		BlockPos anvil, table, input, output, grindstone;
 		boolean brokeAnvil;
-		int renderDistance;
+		int renderDistance, strafeTicks, blocksBefore;
 		int screenMoves, screenTurns, screenWalkKey;
 		Vec3 lastPos;
 		float lastYaw, lastPitch;
@@ -137,8 +137,9 @@ final class FactoryTest {
 			if (screen && lastScreen) {
 				if (lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) screenMoves++;
 				if (Math.abs(mc.player.getYRot() - lastYaw) > 0.01 || Math.abs(mc.player.getXRot() - lastPitch) > 0.01) screenTurns++;
-				if (mc.options.keyUp.isDown()) screenWalkKey++;
+				if (mc.options.keyUp.isDown() || mc.options.keyDown.isDown() || mc.options.keyLeft.isDown() || mc.options.keyRight.isDown()) screenWalkKey++;
 			}
+			if (!screen && (mc.options.keyLeft.isDown() || mc.options.keyRight.isDown())) strafeTicks++;
 			lastScreen = screen;
 			lastPos = mc.player.position();
 			lastYaw = mc.player.getYRot();
@@ -246,7 +247,8 @@ final class FactoryTest {
 						villager(l, 17.5, y, vz, VillagerProfession.WEAPONSMITH, gear(l, Items.DIAMOND_SWORD, 3, Enchantments.BANE_OF_ARTHROPODS, 3));
 						villager(l, 8.5, y, 7.5, VillagerProfession.LIBRARIAN, sellBook(l, Enchantments.THORNS, 3, 1)); // out of reach
 						// 3.5 blocks off the walkway: reached by stepping off it (and the cheapest Mending, so buying goes there too)
-						villager(l, 10.5, y, 4.3, VillagerProfession.LIBRARIAN, sellBook(l, Enchantments.MENDING, 1, 2));
+						villager(l, 10.5, y, 4.3, VillagerProfession.LIBRARIAN, sellBook(l, Enchantments.MENDING, 1, 2),
+								sellBook(l, Enchantments.SILK_TOUCH, 1, 3), sellBook(l, Enchantments.FORTUNE, 3, 3));
 						// a fence post in front of the Respiration librarian blocks the middle of it: aim past the post
 						l.setBlock(new BlockPos(7, y + 1, -1), Blocks.OAK_FENCE.defaultBlockState(), 3);
 						// far down the walkway: not sent to the client until the survey walks there
@@ -352,8 +354,11 @@ final class FactoryTest {
 					ts.onClose();
 					next();
 				}
-				case 5 -> {
+				case 5 -> { // start with the inventory full of emeralds: they get packed into blocks and the blocks stored
 					if (in() < 10) return;
+					fillWithEmeralds(mc);
+					Factory.cfg.dropSpot = new double[] {5.5, y, 2.5, 0, -30}; // facing away from the walkway
+					Factory.cfg.save();
 					cmd(mc, "kitfactory start");
 					next();
 				}
@@ -392,7 +397,13 @@ final class FactoryTest {
 					check(fireProt == 0, "no item with a clashing enchantment (Fire Protection helmet / Bane sword) was bought");
 					int diamonds = diamonds(mc);
 					check(diamonds == 63, "helmets and sword bought from villagers, only the spear crafted (1 of 64 diamonds used, " + (64 - diamonds) + ")");
-					check(emeraldBlocks(mc) == 2, "emerald blocks in the input chest left alone: emeralds come from string (" + emeraldBlocks(mc) + " of 2 left)");
+					check(onPlayer(mc, Items.DIAMOND) == 0 && onPlayer(mc, Items.STICK) == 0,
+							"leftover diamonds and sticks went back in the input chest (" + onPlayer(mc, Items.DIAMOND) + ", " + onPlayer(mc, Items.STICK) + " still carried)");
+					check(Factory.packed >= 1, "spare emeralds were packed into emerald blocks at the crafting table (" + Factory.packed + " rounds)");
+					check(emeraldBlocks(mc) >= 22, "spare emerald blocks stored in the input chest, the 2 that were there kept (" + emeraldBlocks(mc) + ")");
+					check(Factory.batchSizes.getOrDefault("minecraft:diamond_helmet", 0) == 2,
+							"both helmets enchanted together although the inventory started full of emeralds (" + Factory.batchSizes + ")");
+					check(strafeTicks > 20, "walked to villagers strafing with A/D while looking at them (" + strafeTicks + " ticks)");
 					check(Factory.ground >= 1, "the Bane of Arthropods sword was ground clean before enchanting (" + Factory.ground + ")");
 					int spears = 0;
 					for (ItemStack s : out) if (s.is(Items.DIAMOND_SPEAR) && lvl(mc, s, Enchantments.SHARPNESS) == 5 && lvl(mc, s, Enchantments.UNBREAKING) == 3
@@ -408,9 +419,9 @@ final class FactoryTest {
 				}
 				case 7 -> { // a pickaxe: on the buy list, but nobody here sells one
 					if (in() < 10) return;
-					cmd(mc, "kitfactory buy pickaxe 1");
-					check(Factory.cfg.targets.get("minecraft:diamond_pickaxe") == 1 && Factory.cfg.buy.contains("minecraft:diamond_pickaxe"),
-							"'/kitfactory buy pickaxe 1' sets the amount and Buy");
+					cmd(mc, "kitfactory buy pickaxe 2");
+					check(Factory.cfg.targets.get("minecraft:diamond_pickaxe") == 2 && Factory.cfg.buy.contains("minecraft:diamond_pickaxe"),
+							"'/kitfactory buy pickaxe 2' sets the amount and Buy");
 					cmd(mc, "kitfactory start");
 					next();
 				}
@@ -439,22 +450,25 @@ final class FactoryTest {
 					String id = "minecraft:diamond_pickaxe";
 					var box = is.amountBox(id);
 					var how = is.sourceButton(id);
-					check(box != null && how != null && how.getMessage().getString().equals("Buy") && box.getValue().equals("1"),
-							"items screen shows the pickaxe: amount 1, Buy");
+					check(box != null && how != null && how.getMessage().getString().equals("Buy") && box.getValue().equals("2"),
+							"items screen shows the pickaxe: amount 2, Buy");
 					if (box == null || how == null) {
 						finish(mc);
 						return;
 					}
 					box.setValue("");
-					box.setValue("1");
+					box.setValue("2");
 					Input.click(is, how.getX() + how.getWidth() / 2.0, how.getY() + how.getHeight() / 2.0, 0, false);
-					check(how.getMessage().getString().equals("Craft") && !Factory.cfg.buy.contains(id) && Factory.cfg.targets.get(id) == 1,
+					check(how.getMessage().getString().equals("Craft") && !Factory.cfg.buy.contains(id) && Factory.cfg.targets.get(id) == 2,
 							"clicking Buy switches it to Craft");
 					is.onClose();
 					next();
 				}
-				case 10 -> {
+				case 10 -> { // full of emeralds again, and spare blocks thrown at the drop spot this time
+					if (in() == 2) cmd(mc, "kitfactory spare drop");
 					if (in() < 10) return;
+					fillWithEmeralds(mc);
+					blocksBefore = emeraldBlocks(mc);
 					cmd(mc, "kitfactory start");
 					next();
 				}
@@ -469,19 +483,60 @@ final class FactoryTest {
 							ItemStack s = c.getItem(i);
 							if (s.is(Items.DIAMOND_PICKAXE)) {
 								AutoAnvil.LOGGER.info("[factorytest] output: {}", describe(s));
-								if (lvl(mc, s, Enchantments.UNBREAKING) == 3 && lvl(mc, s, Enchantments.MENDING) == 1) n++;
+								if (lvl(mc, s, Enchantments.UNBREAKING) == 3 && lvl(mc, s, Enchantments.MENDING) == 1 && lvl(mc, s, Enchantments.SILK_TOUCH) == 1
+										&& lvl(mc, s, Enchantments.FORTUNE) == 0) n++;
 							}
 						}
 						return n;
 					});
-					check(pickaxes == 1, "output chest: 1 crafted diamond pickaxe with Unbreaking III + Mending (" + pickaxes + ")");
-					check(diamonds(mc) == 60, "the pickaxe took 3 diamonds from the chest (" + (64 - diamonds(mc)) + " used in all)");
-					check(emeraldBlocks(mc) == 2, "emerald blocks still untouched");
+					check(pickaxes == 2, "output chest: 2 crafted diamond pickaxes with Unbreaking III, Mending, Silk Touch and no Fortune (" + pickaxes + ")");
+					check(diamonds(mc) == 57, "the pickaxes took 6 diamonds from the chest (" + (64 - diamonds(mc)) + " used in all)");
+					check(onPlayer(mc, Items.DIAMOND) == 0 && onPlayer(mc, Items.STICK) == 0, "leftover pickaxe materials went back in the input chest");
+					check(Factory.batchSizes.getOrDefault("minecraft:diamond_pickaxe", 0) == 2, "both pickaxes crafted and enchanted together (" + Factory.batchSizes + ")");
+					int thrown = server(mc, () -> {
+						int n = 0;
+						for (var e : mc.getSingleplayerServer().overworld().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+								new net.minecraft.world.phys.AABB(5.5, y, 2.5, 5.5, y, 2.5).inflate(10))) {
+							if (e.getItem().is(Items.EMERALD_BLOCK)) n += e.getItem().getCount();
+						}
+						return n;
+					});
+					check(thrown >= 64 * 20, "spare emerald blocks thrown at the drop spot (" + thrown + ")");
+					check(emeraldBlocks(mc) == blocksBefore, "drop mode: no blocks put in or taken from the chest (" + emeraldBlocks(mc) + " vs " + blocksBefore + ")");
 					finish(mc);
 				}
 				default -> {
 				}
 			}
+		}
+
+		/** 20 stacks of emerald blocks and 12 of emeralds into the free slots, like after a lot of string trading. */
+		void fillWithEmeralds(Minecraft mc) {
+			server(mc, () -> {
+				ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+				int blocks = 20, ems = 12;
+				for (int i = 0; i < 36; i++) {
+					if (!p.getInventory().getItem(i).isEmpty()) continue;
+					if (blocks > 0) {
+						p.getInventory().setItem(i, new ItemStack(Items.EMERALD_BLOCK, 64));
+						blocks--;
+					} else if (ems > 0) {
+						p.getInventory().setItem(i, new ItemStack(Items.EMERALD, 64));
+						ems--;
+					}
+				}
+				p.inventoryMenu.broadcastChanges();
+				return null;
+			});
+		}
+
+		int onPlayer(Minecraft mc, Item item) {
+			return server(mc, () -> {
+				ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+				int n = 0;
+				for (int i = 0; i < 36; i++) if (p.getInventory().getItem(i).is(item)) n += p.getInventory().getItem(i).getCount();
+				return n;
+			});
 		}
 
 		int emeraldBlocks(Minecraft mc) {

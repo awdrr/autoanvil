@@ -15,6 +15,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
@@ -95,6 +96,21 @@ public final class Factory {
 			error = msg;
 			return Status.FAILED;
 		}
+
+		/** What's on the cursor back into the inventory: onto a stack of the same with room, else an empty slot. */
+		Status putDown(Minecraft mc, AbstractContainerMenu menu, Inventory inv) {
+			ItemStack c = menu.getCarried();
+			int slot = -1;
+			for (int i = 0; i < 36 && slot < 0; i++) {
+				ItemStack s = inv.getItem(i);
+				if (ItemStack.isSameItemSameComponents(s, c) && s.getCount() < s.getMaxStackSize()) slot = ItemQueue.menuSlot(menu, inv, i);
+			}
+			if (slot < 0) slot = emptyMenuSlot(menu, inv);
+			if (slot < 0) return fail("No free slot to put " + c.getHoverName().getString() + " back");
+			Input.clickSlot(mc, slot, 0, false);
+			wait = gap(mc);
+			return Status.RUNNING;
+		}
 	}
 
 	public static FactoryConfig cfg = new FactoryConfig();
@@ -120,7 +136,13 @@ public final class Factory {
 	static final double MAX_STEP_OFF = 2.5;
 	private static final Set<String> toldCrafting = new HashSet<>();
 	private static final Set<String> toldGrinding = new HashSet<>();
-	public static int ground;
+	public static int ground, packed;
+	/** Biggest batch combined at the anvil, per item (the test reads it). */
+	public static final Map<String, Integer> batchSizes = new HashMap<>();
+	/** The input chests had no room for more emerald blocks this run. */
+	private static boolean inputsFull;
+	private static final Set<String> toldBatch = new HashSet<>();
+	private static final Map<String, Boolean> clearCache = new HashMap<>();
 	private static long lastCommandMs, commandCooldownUntil;
 	private static int bought, crafted;
 	public static KeyMapping toggleKey;
@@ -155,6 +177,9 @@ public final class Factory {
 		surveyErrors.clear();
 		surveyWhere.clear();
 		surveying = null;
+		inputsFull = false;
+		toldBatch.clear();
+		clearCache.clear();
 		toldCrafting.clear();
 		toldGrinding.clear();
 		failures = 0;
@@ -308,7 +333,7 @@ public final class Factory {
 			Villager v = next;
 			int n = surveyTries.merge(v.getStringUUID(), 1, Integer::sum);
 			plan("survey " + v.getStringUUID() + " #" + n, sig,
-					walkTo(Nav.spotFor(route, v.position()), "Walking to a villager"),
+					walkTo(Nav.spotFor(route, v.position()), "Walking to a villager", eyesOf(v.getUUID())),
 					stepUp(v.getUUID()),
 					openVillager(v.getUUID()),
 					record(v.getUUID()),
@@ -409,7 +434,16 @@ public final class Factory {
 			int left = cfg.targets.get(typeId) - cfg.done.getOrDefault(typeId, 0);
 			int perItem = 1 + kit.size();
 			int room = free(inv) + count(inv, s -> s.is(Items.DIAMOND) || s.is(Items.STICK)) / 64 - 7;
-			int want = Math.max(1, Math.min(Math.min(cfg.maxBatch, left), room / perItem));
+			int lo = Math.min(left, cfg.batchMin(typeId)), hi = Math.min(left, cfg.batchMax(typeId));
+			if (room / perItem < lo && canMakeRoom(mc, inv, keepFor(mc, type, kit, lo))) {
+				makeRoom(mc, sig, keepFor(mc, type, kit, lo));
+				return;
+			}
+			int want = Math.max(1, Math.min(hi, room / perItem));
+			if (want < lo && toldBatch.add(typeId)) {
+				say("Only room for " + want + " " + new ItemStack(type).getHoverName().getString() + " at a time (you asked for " + lo
+						+ "): empty the inventory of other things.");
+			}
 			boolean buys = cfg.buy.contains(typeId);
 			Gear gear = buys ? bestGear(mc, type, kit) : null;
 			if (buys && gear == null) {
@@ -450,7 +484,7 @@ public final class Factory {
 				}
 				Item item = type;
 				plan("buy " + typeId, sig,
-						walkTo(spot(mc, route, gear.trader()), "Walking to " + gear.trader().label()),
+						walkTo(spot(mc, route, gear.trader()), "Walking to " + gear.trader().label(), eyesOf(UUID.fromString(gear.trader().uuid))),
 						stepUp(UUID.fromString(gear.trader().uuid)),
 						openVillager(UUID.fromString(gear.trader().uuid)),
 						buy(gear.trader(), offer, n, s -> s.is(item)),
@@ -479,10 +513,18 @@ public final class Factory {
 				return;
 			}
 			int n = want;
-			plan("craft " + typeId, sig, walkTo(cfg.baseVec(), "Walking to the base"),
-					openBlock(table, "crafting table", s -> s instanceof CraftingScreen),
+			List<Step> s = new ArrayList<>(List.of(walkTo(cfg.baseVec(), "Walking to the base"),
+					openBlock(table, "crafting table", x -> x instanceof CraftingScreen),
 					craft(r, n),
-					closeScreens());
+					closeScreens()));
+			// what's left of the materials goes back in the input chest
+			Predicate<ItemStack> material = x -> r.ingredients().contains(x.getItem());
+			for (int[] c : cfg.inputChests) {
+				s.add(openBlock(FactoryConfig.pos(c), "input chest", x -> x instanceof ContainerScreen).skipIf(() -> count(inv, material) == 0));
+				s.add(bank(material, 0, "Putting leftover materials back").skipIf(() -> !(Minecraft.getInstance().screen instanceof ContainerScreen)));
+				s.add(closeScreens());
+			}
+			plan("craft " + typeId, sig, s.toArray(new Step[0]));
 			return;
 		}
 
@@ -544,6 +586,10 @@ public final class Factory {
 			}
 			int n = Math.min(missingN, pay / Math.max(1, offer.price));
 			if (payB != null) n = Math.min(n, count(inv, s -> s.is(payB) && !s.isEnchanted()) / Math.max(1, offer.costBCount));
+			if (free(inv) < n && canMakeRoom(mc, inv, (int) emeraldsNeeded)) {
+				makeRoom(mc, sig, (int) emeraldsNeeded);
+				return;
+			}
 			n = Math.min(n, free(inv));
 			if (n <= 0) {
 				makeRoom(mc, sig, (int) emeraldsNeeded);
@@ -553,7 +599,7 @@ public final class Factory {
 			Holder<Enchantment> e = missingE;
 			int lv = kit.get(e);
 			plan("buy " + offer.enchant, sig,
-					walkTo(spot(mc, route, trader), "Walking to " + trader.label()),
+					walkTo(spot(mc, route, trader), "Walking to " + trader.label(), eyesOf(UUID.fromString(trader.uuid))),
 					stepUp(UUID.fromString(trader.uuid)),
 					openVillager(UUID.fromString(trader.uuid)),
 					buy(trader, offer, buy, s -> Kit.isBookOf(s, e, lv)),
@@ -578,6 +624,7 @@ public final class Factory {
 		}
 
 		// 9. combine on the anvil
+		batchSizes.merge(typeId, batch.size(), Math::max);
 		plan("anvil " + typeId, sig, walkTo(cfg.baseVec(), "Walking to the base"),
 				openBlock(anvilPos, "anvil", s -> s instanceof AnvilScreen),
 				anvil(batch),
@@ -662,7 +709,7 @@ public final class Factory {
 		}
 		List<Vec3> route = cfg.route();
 		plan("string trade", sig,
-				walkTo(spot(mc, route, entry.getKey()), "Walking to " + entry.getKey().label()),
+				walkTo(spot(mc, route, entry.getKey()), "Walking to " + entry.getKey().label(), eyesOf(UUID.fromString(entry.getKey().uuid))),
 				stepUp(UUID.fromString(entry.getKey().uuid)),
 				openVillager(UUID.fromString(entry.getKey().uuid)),
 				tradeString(offer, targetEmeralds, targetLevel),
@@ -693,14 +740,32 @@ public final class Factory {
 
 	/** Walk along the route to a point, holding forward and turning like a player. */
 	static Step walkTo(Vec3 target, String why) {
-		return walk(target, why, false);
+		return walk(target, why, false, null);
 	}
 
-	/** {@code direct}: straight at the target instead of along the walkway. */
-	static Step walk(Vec3 target, String why, boolean direct) {
+	/** Walk there looking at {@code lookAt} (a villager) the whole way, strafing instead of turning to walk. */
+	static Step walkTo(Vec3 target, String why, Supplier<Vec3> lookAt) {
+		return walk(target, why, false, lookAt);
+	}
+
+	/** Where a villager's eyes are, while it's loaded. */
+	static Supplier<Vec3> eyesOf(UUID uuid) {
+		return () -> {
+			Entity e = entity(Minecraft.getInstance(), uuid);
+			return e == null ? null : e.getEyePosition();
+		};
+	}
+
+	/**
+	 * {@code direct}: straight at the target instead of along the walkway. With {@code lookAt}, keep looking at it and
+	 * hold whichever of W/A/S/D (or two of them) walks the right way, like a player strafing along a row of villagers.
+	 */
+	static Step walk(Vec3 target, String why, boolean direct, Supplier<Vec3> lookAt) {
 		return new Step(why) {
 			Vec3 last;
-			int still;
+			int still, rel;
+			List<Vec3> waypoints;
+			boolean alongOnly;
 
 			Status run(Minecraft mc) {
 				if (mc.screen != null) {
@@ -721,16 +786,44 @@ public final class Factory {
 					Input.forward(mc, false);
 					return fail("Walking took too long");
 				}
-				Vec3 next = direct ? target : Nav.next(cfg.route(), pos, target);
-				float yaw = (float) Math.toDegrees(Math.atan2(-(next.x - pos.x), next.z - pos.z));
-				Input.turnToward(mc, yaw, 12f, 25f);
-				float off = Math.abs(Mth.wrapDegrees(yaw - p.getYRot()));
-				boolean go = off < 30 && !(dist < 0.9 && t % 2 == 0); // tap in the last block to stop on the spot
-				Input.forward(mc, go);
+				if (waypoints == null) {
+					waypoints = new ArrayList<>(direct ? List.of(target) : Nav.plan(cfg.route(), pos, target, (a, b) -> clearLine(mc, a, b)));
+				}
+				while (waypoints.size() > 1 && Nav.horiz(pos, waypoints.get(0)) < 0.6) waypoints.remove(0);
+				Vec3 next = alongOnly ? Nav.next(cfg.route(), pos, target) : waypoints.get(0);
+				float moveYaw = (float) Math.toDegrees(Math.atan2(-(next.x - pos.x), next.z - pos.z));
+				float pitch = 12f;
+				Vec3 look = lookAt == null ? null : lookAt.get();
+				if (look != null && Nav.horiz(pos, look) > 1.0) {
+					// face as close to it as one of the eight key directions allows; keep the keys held unless another set is clearly better
+					float[] a = Input.anglesTo(p, look);
+					int best = rel;
+					float bestErr = Math.abs(Mth.wrapDegrees(moveYaw - rel - a[0])) - 8;
+					for (int r = -135; r <= 180; r += 45) {
+						float e = Math.abs(Mth.wrapDegrees(moveYaw - r - a[0]));
+						if (e < bestErr) {
+							bestErr = e;
+							best = r;
+						}
+					}
+					rel = best;
+					pitch = a[1];
+				} else {
+					rel = 0;
+				}
+				Input.turnToward(mc, moveYaw - rel, pitch, 25f);
+				float off = Math.abs(Mth.wrapDegrees(p.getYRot() + rel - moveYaw));
+				boolean go = off < 30 && !(waypoints.size() == 1 && dist < 0.9 && t % 2 == 0); // tap in the last block to stop on the spot
+				Input.move(mc, go ? rel : null);
 				if (go && last != null && Nav.horiz(last, pos) < 0.01) still++;
 				else still = 0;
 				last = pos;
 				if (still > 50) {
+					if (!direct && !alongOnly) { // a shortcut that wasn't: stick to the walkway as walked
+						alongOnly = true;
+						still = 0;
+						return Status.RUNNING;
+					}
 					Input.forward(mc, false);
 					return fail("Stuck at " + BlockPos.containing(pos).toShortString() + " walking to " + BlockPos.containing(target).toShortString());
 				}
@@ -1097,14 +1190,21 @@ public final class Factory {
 
 	/** Shift-click emerald stacks into the open chest while more than {@code keep} would still be left. */
 	static Step bankEmeralds(int keep) {
-		return new Step("Storing spare emeralds") {
+		return bank(s -> s.is(Items.EMERALD), keep, "Storing spare emeralds");
+	}
+
+	/** Shift-click stacks of something into the open chest while more than {@code keep} would still be left. */
+	static Step bank(Predicate<ItemStack> what, int keep, String label) {
+		return new Step(label) {
+			final Set<Integer> tried = new HashSet<>();
+
 			Status run(Minecraft mc) {
 				if (!(mc.screen instanceof ContainerScreen cs)) return Status.DONE;
 				Inventory inv = mc.player.getInventory();
-				int have = count(inv, s -> s.is(Items.EMERALD));
+				int have = count(inv, what);
 				for (int i = 0; i < 36; i++) {
 					ItemStack s = inv.getItem(i);
-					if (!s.is(Items.EMERALD) || have - s.getCount() < keep) continue;
+					if (!what.test(s) || have - s.getCount() < keep || !tried.add(i)) continue; // (a full chest leaves it where it is)
 					Input.clickSlot(mc, ItemQueue.menuSlot(cs.getMenu(), inv, i), 0, true);
 					wait = gap(mc);
 					return Status.RUNNING;
@@ -1115,18 +1215,233 @@ public final class Factory {
 	}
 
 	/**
-	 * The inventory is full (the string command fills every free slot): trade the string into emeralds (20 to 1), or
-	 * put spare emeralds in the input chest.
+	 * Pack loose emeralds beyond {@code keep} into emerald blocks at the open crafting table: pick up a stack, drag it
+	 * across the nine cells (what a player does to split it evenly), up to nine stacks, then shift-click the blocks out.
+	 */
+	static Step packEmeralds(int keep) {
+		return new Step("Packing emeralds into blocks") {
+			int phase, used, rounds, waited;
+
+			Status run(Minecraft mc) {
+				if (!(mc.screen instanceof CraftingScreen cs)) return fail("The crafting table closed");
+				CraftingMenu menu = cs.getMenu();
+				Inventory inv = mc.player.getInventory();
+				List<Slot> grid = menu.getInputGridSlots();
+				if (!menu.getCarried().isEmpty()) {
+					if (phase == 1 && menu.getCarried().is(Items.EMERALD)) { // what the spread left over: onto the emptiest cell
+						Slot least = null;
+						for (Slot g : grid) if (g.getItem().getCount() < 64 && (least == null || g.getItem().getCount() < least.getItem().getCount())) least = g;
+						if (least != null) {
+							Input.clickSlot(mc, least.index, 0, false);
+							wait = gap(mc);
+							return Status.RUNNING;
+						}
+					}
+					return putDown(mc, menu, inv);
+				}
+				switch (phase) {
+					case 0 -> { // start from an empty grid
+						for (Slot g : grid) {
+							if (!g.hasItem()) continue;
+							if (t > 200) return fail("Couldn't empty the crafting grid");
+							Input.clickSlot(mc, g.index, 0, true);
+							wait = gap(mc) + 1;
+							return Status.RUNNING;
+						}
+						phase = 1;
+						used = 0;
+						return Status.RUNNING;
+					}
+					case 1 -> {
+						int loose = count(inv, s -> s.is(Items.EMERALD));
+						int most = 0;
+						for (Slot g : grid) most = Math.max(most, g.getItem().getCount());
+						int pick = -1;
+						for (int i = 0; i < 36 && used < 9; i++) {
+							ItemStack s = inv.getItem(i);
+							if (!s.is(Items.EMERALD) || s.getCount() < 9 || loose - s.getCount() < keep || most + s.getCount() / 9 + 1 > 64) continue;
+							if (pick < 0 || s.getCount() > inv.getItem(pick).getCount()) pick = i;
+						}
+						if (pick < 0) {
+							phase = used > 0 ? 2 : 4;
+							waited = 0;
+							return Status.RUNNING;
+						}
+						Input.clickSlot(mc, ItemQueue.menuSlot(menu, inv, pick), 0, false); // pick the stack up
+						List<double[]> cells = new ArrayList<>();
+						for (Slot g : grid) cells.add(Input.slotCentre(cs, g));
+						Input.drag(cs, 0, cells); // spread it over the nine cells
+						used++;
+						wait = gap(mc);
+						return Status.RUNNING;
+					}
+					case 2 -> { // the blocks show once the server has the grid
+						if (menu.getResultSlot().getItem().is(Items.EMERALD_BLOCK)) {
+							Input.clickSlot(mc, menu.getResultSlot().index, 0, true);
+							phase = 3;
+							wait = gap(mc) + latencyTicks(mc) + 2;
+						} else if (++waited > 100 + 2 * latencyTicks(mc)) {
+							return fail("No emerald blocks showed in the crafting table");
+						}
+						return Status.RUNNING;
+					}
+					case 3 -> { // leftovers back, then another round while there's plenty
+						for (Slot g : grid) {
+							if (!g.hasItem()) continue;
+							Input.clickSlot(mc, g.index, 0, true);
+							wait = gap(mc) + 1;
+							return Status.RUNNING;
+						}
+						packed++;
+						if (++rounds < 8 && count(inv, s -> s.is(Items.EMERALD)) - keep >= 128) {
+							phase = 1;
+							used = 0;
+							return Status.RUNNING;
+						}
+						failures = 0;
+						return Status.DONE;
+					}
+					default -> {
+						failures = 0;
+						return Status.DONE;
+					}
+				}
+			}
+		};
+	}
+
+	/** At the drop spot: face the way it was marked, open the inventory and throw out every stack of something. */
+	static Step throwAway(Predicate<ItemStack> what, float yaw, float pitch, String label) {
+		return new Step(label) {
+			int aligned, opened;
+
+			Status run(Minecraft mc) {
+				Inventory inv = mc.player.getInventory();
+				if (!(mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is)) {
+					if (count(inv, what) == 0) {
+						failures = 0;
+						return Status.DONE;
+					}
+					if (mc.screen != null) {
+						Input.escape(mc);
+						wait = 2;
+						return Status.RUNNING;
+					}
+					float err = Input.turnToward(mc, yaw, pitch, 30f);
+					if (err > 1.5f) {
+						aligned = 0;
+						return Status.RUNNING;
+					}
+					if (++aligned < 2) return Status.RUNNING;
+					if (++opened > 5) return fail("The inventory didn't open");
+					KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyInventory));
+					wait = 4 + latencyTicks(mc);
+					return Status.RUNNING;
+				}
+				var menu = is.getMenu();
+				if (!menu.getCarried().isEmpty()) {
+					if (!what.test(menu.getCarried())) return putDown(mc, menu, inv);
+					Input.click(is, 1, 1, 0, false); // outside the window: throw it
+					wait = gap(mc);
+					return Status.RUNNING;
+				}
+				for (int i = 0; i < 36; i++) {
+					if (!what.test(inv.getItem(i))) continue;
+					Input.clickSlot(mc, ItemQueue.menuSlot(menu, inv, i), 0, false);
+					Input.click(is, 1, 1, 0, false);
+					wait = gap(mc);
+					return Status.RUNNING;
+				}
+				failures = 0;
+				return Status.DONE;
+			}
+		};
+	}
+
+	/** Emeralds the next {@code n} of this item will cost: its books (and the item, if bought). */
+	static int keepFor(Minecraft mc, Item type, Map<Holder<Enchantment>, Integer> kit, int n) {
+		long sum = 0;
+		for (var en : kit.entrySet()) {
+			var o = TradeBook.get().cheapestBook(en.getKey(), en.getValue(), around(mc));
+			if (o != null && o.getValue().costA.equals("minecraft:emerald")) sum += o.getValue().price;
+		}
+		if (cfg.buy.contains(Kit.id(type))) {
+			Gear g = bestGear(mc, type, kit);
+			if (g != null && g.offer().costA.equals("minecraft:emerald")) sum += g.offer().price;
+		}
+		return (int) Math.min(Integer.MAX_VALUE, sum * n);
+	}
+
+	/** Whether {@link #makeRoom} can free a slot or more. */
+	static boolean canMakeRoom(Minecraft mc, Inventory inv, int keepEmeralds) {
+		int keep = Math.max(keepEmeralds, cfg.keepEmeralds);
+		var st = TradeBook.get().stringTrade(around(mc));
+		int string = count(inv, s -> s.is(Items.STRING));
+		if (st != null && string >= st.getValue().price && string >= 64) return true;
+		int loose = count(inv, s -> s.is(Items.EMERALD));
+		if (loose - keep >= 128 && cfg.craftingTable != null) return true;
+		if (count(inv, s -> s.is(Items.EMERALD_BLOCK)) > 0 && (canStoreBlocks() || cfg.dropSpot != null)) return true;
+		return loose - keepEmeralds >= 64 && !cfg.inputChests.isEmpty() && !inputsFull;
+	}
+
+	static boolean canStoreBlocks() {
+		return cfg.spareEmeralds.equals("chest") && !cfg.inputChests.isEmpty() && !inputsFull;
+	}
+
+	/**
+	 * The inventory is too full for a batch: trade string into emeralds (20 to 1; the string command fills every free
+	 * slot), pack spare emeralds nine to a block, put the blocks in the input chests or throw them at the drop spot.
 	 */
 	private static void makeRoom(Minecraft mc, long sig, int keepEmeralds) {
 		Inventory inv = mc.player.getInventory();
+		int keep = Math.max(keepEmeralds, cfg.keepEmeralds);
 		var st = TradeBook.get().stringTrade(around(mc));
 		if (st != null && count(inv, s -> s.is(Items.STRING)) >= st.getValue().price) {
 			stringTrade(mc, 0, 0, sig);
 			return;
 		}
+		if (count(inv, s -> s.is(Items.EMERALD)) - keep >= 128 && cfg.craftingTable != null) {
+			plan("pack emeralds", sig, walkTo(cfg.baseVec(), "Walking to the base"),
+					openBlock(FactoryConfig.pos(cfg.craftingTable), "crafting table", s -> s instanceof CraftingScreen),
+					packEmeralds(keep),
+					closeScreens());
+			return;
+		}
+		int blocks = count(inv, s -> s.is(Items.EMERALD_BLOCK));
+		if (blocks > 0 && canStoreBlocks()) {
+			List<Step> s = new ArrayList<>();
+			s.add(walkTo(cfg.baseVec(), "Walking to the base"));
+			for (int[] c : cfg.inputChests) {
+				s.add(openBlock(FactoryConfig.pos(c), "input chest", x -> x instanceof ContainerScreen));
+				s.add(bank(x -> x.is(Items.EMERALD_BLOCK), 0, "Storing emerald blocks"));
+				s.add(closeScreens());
+			}
+			s.add(new Step("Checking the chests") {
+				Status run(Minecraft m) {
+					if (count(inv, x -> x.is(Items.EMERALD_BLOCK)) > 0) {
+						inputsFull = true;
+						say("The input chests are full" + (cfg.dropSpot != null ? ": throwing spare emerald blocks at the drop spot from now on." : "."));
+					}
+					return Status.DONE;
+				}
+			});
+			plan("store emerald blocks", sig, s.toArray(new Step[0]));
+			return;
+		}
+		if (blocks > 0 && cfg.dropSpot != null) {
+			double[] d = cfg.dropSpot;
+			plan("throw emerald blocks", sig, walkTo(new Vec3(d[0], d[1], d[2]), "Walking to the drop spot"),
+					throwAway(x -> x.is(Items.EMERALD_BLOCK), (float) d[3], (float) d[4], "Throwing away spare emerald blocks"),
+					closeScreens());
+			return;
+		}
 		int emeralds = count(inv, s -> s.is(Items.EMERALD));
-		if (emeralds - keepEmeralds >= 64 && !cfg.inputChests.isEmpty()) {
+		if (blocks > 0) {
+			stop("Inventory full of emerald blocks and nowhere to put them: empty the input chests, or stand where they can be thrown away"
+					+ " (into lava, off an edge...) and type /kitfactory dropspot.");
+			return;
+		}
+		if (emeralds - keepEmeralds >= 64 && !cfg.inputChests.isEmpty() && !inputsFull) {
 			List<Step> s = new ArrayList<>();
 			s.add(walkTo(cfg.baseVec(), "Walking to the base"));
 			for (int[] c : cfg.inputChests) {
@@ -1618,6 +1933,27 @@ public final class Factory {
 		return out;
 	}
 
+	/**
+	 * Can the player walk straight from a to b: room for the body (with a little to spare) all the way, floor under
+	 * it, nothing to climb. Remembered for the run.
+	 */
+	static boolean clearLine(Minecraft mc, Vec3 a, Vec3 b) {
+		String k = String.format("%.2f,%.2f,%.2f>%.2f,%.2f,%.2f", a.x, a.y, a.z, b.x, b.y, b.z);
+		Boolean c = clearCache.get(k);
+		if (c != null) return c;
+		c = Math.abs(a.y - b.y) <= 0.6;
+		double len = Nav.horiz(a, b);
+		int n = Math.max(1, (int) Math.ceil(len / 0.3));
+		for (int i = 0; i <= n && c; i++) {
+			Vec3 p = a.lerp(b, (double) i / n);
+			AABB body = mc.player.getDimensions(Pose.STANDING).makeBoundingBox(p).inflate(0.1, -0.05, 0.1).move(0, 0.05, 0);
+			AABB under = new AABB(p.x - 0.25, p.y - 0.3, p.z - 0.25, p.x + 0.25, p.y - 0.01, p.z + 0.25);
+			if (!mc.level.noCollision(mc.player, body) || mc.level.noCollision(mc.player, under)) c = false;
+		}
+		clearCache.put(k, c);
+		return c;
+	}
+
 	static boolean inReach(Minecraft mc, Vec3 eye, AABB box) {
 		return Nav.toBox(eye, box) <= mc.player.entityInteractionRange() - 0.3;
 	}
@@ -1659,7 +1995,7 @@ public final class Factory {
 					if (e == null || inReach(mc, mc.player.getEyePosition(), e.getBoundingBox())) return Status.DONE; // (openVillager reports a missing one)
 					Vec3 to = standFor(mc, cfg.route(), e.position(), e.getBoundingBox());
 					if (to == null) return fail("The villager at " + e.blockPosition().toShortString() + " is out of reach from the walkway");
-					walk = walk(to, label, true);
+					walk = walk(to, label, true, eyesOf(uuid));
 				}
 				if (walk.wait > 0) {
 					walk.wait--;

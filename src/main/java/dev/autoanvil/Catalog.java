@@ -98,6 +98,15 @@ public final class Catalog {
 		return !DEFAULT_OFF.contains(path(e));
 	}
 
+	/** Default for one kind of item: pickaxes (and pickaxe books) take Silk Touch over Fortune. */
+	public static boolean defaultOn(Holder<Enchantment> e, String kind) {
+		if (kind != null && kind.endsWith("pickaxe")) {
+			if (path(e).equals("silk_touch")) return true;
+			if (path(e).equals("fortune")) return false;
+		}
+		return defaultOn(e);
+	}
+
 	public static final Comparator<Holder<Enchantment>> DISPLAY = Comparator
 			.comparingInt((Holder<Enchantment> e) -> {
 				int i = ORDER.indexOf(path(e));
@@ -186,6 +195,10 @@ public final class Catalog {
 	 * {@code overrides}, defaults ({@link #defaultOn}) for the rest.
 	 */
 	public static List<Holder<Enchantment>> wanted(List<Holder<Enchantment>> applicable, Map<String, Boolean> overrides) {
+		return wanted(null, applicable, overrides);
+	}
+
+	public static List<Holder<Enchantment>> wanted(String kind, List<Holder<Enchantment>> applicable, Map<String, Boolean> overrides) {
 		List<Holder<Enchantment>> sorted = new ArrayList<>(applicable);
 		// explicit choices win conflicts against defaults, then importance
 		sorted.sort(Comparator.comparingInt((Holder<Enchantment> e) -> overrides != null && Boolean.TRUE.equals(overrides.get(id(e))) ? 0 : 1)
@@ -193,7 +206,7 @@ public final class Catalog {
 		List<Holder<Enchantment>> out = new ArrayList<>();
 		for (Holder<Enchantment> e : sorted) {
 			Boolean o = overrides == null ? null : overrides.get(id(e));
-			if (!(o != null ? o : defaultOn(e))) continue;
+			if (!(o != null ? o : defaultOn(e, kind))) continue;
 			boolean ok = true;
 			for (Holder<Enchantment> k : out) if (!Enchantment.areCompatible(e, k)) ok = false;
 			if (ok) out.add(e);

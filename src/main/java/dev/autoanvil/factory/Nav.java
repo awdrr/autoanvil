@@ -1,23 +1,27 @@
 package dev.autoanvil.factory;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.function.BiPredicate;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * The route is a polyline: the base spot, then the walkway points you added. The factory only ever walks along it,
- * so it goes exactly where you walked when you marked it.
+ * The route is a polyline: the base spot, then the walkway points you added. The factory walks along it, so it goes
+ * where you walked when you marked it, except that it cuts straight across where the floor between two points is
+ * clear (a walkway that loops round the hall isn't walked all the way round to get back).
  */
 public final class Nav {
 	private Nav() {
 	}
 
-	/** Closest point of the route to {@code p} (horizontally), and how far along the route it is. */
-	public record Proj(Vec3 point, double along, double off) {
+	/** Closest point of the route to {@code p} (horizontally), how far along the route it is, and on which segment. */
+	public record Proj(Vec3 point, double along, double off, int seg) {
 	}
 
 	public static Proj project(List<Vec3> route, Vec3 p) {
-		if (route.size() == 1) return new Proj(route.get(0), 0, horiz(route.get(0), p));
+		if (route.size() == 1) return new Proj(route.get(0), 0, horiz(route.get(0), p), -1);
 		Proj best = null;
 		double s = 0;
 		for (int i = 0; i + 1 < route.size(); i++) {
@@ -27,7 +31,7 @@ public final class Nav {
 			t = Math.max(0, Math.min(1, t));
 			Vec3 q = a.add(b.subtract(a).scale(t));
 			double off = horiz(q, p);
-			if (best == null || off < best.off - 1e-9) best = new Proj(q, s + t * len, off);
+			if (best == null || off < best.off - 1e-9) best = new Proj(q, s + t * len, off, i);
 			s += len;
 		}
 		return best;
@@ -50,6 +54,72 @@ public final class Nav {
 			s += len;
 		}
 		return route.get(route.size() - 1);
+	}
+
+	/**
+	 * Waypoints from {@code from} to {@code to}, the last one being {@code to}: the shortest way along the walkway
+	 * segments as walked, onto the walkway from {@code from} and off it to {@code to}, plus straight lines between
+	 * any two of these points that {@code clear} says can be walked.
+	 */
+	public static List<Vec3> plan(List<Vec3> route, Vec3 from, Vec3 to, BiPredicate<Vec3, Vec3> clear) {
+		if (route.size() < 2 || clear.test(from, to)) return List.of(to);
+		Proj pf = project(route, from), pt = project(route, to);
+		List<Vec3> nodes = new ArrayList<>(List.of(from, to));
+		nodes.addAll(route);
+		int nf = nodes.size(), nt = nf + 1, r0 = 2;
+		nodes.add(pf.point());
+		nodes.add(pt.point());
+		int n = nodes.size();
+		double[][] w = new double[n][n];
+		for (double[] row : w) Arrays.fill(row, Double.POSITIVE_INFINITY);
+		for (int i = 0; i + 1 < route.size(); i++) link(w, nodes, r0 + i, r0 + i + 1);
+		link(w, nodes, 0, nf); // back onto the walkway
+		link(w, nodes, 1, nt); // off it to the target
+		link(w, nodes, nf, r0 + pf.seg());
+		link(w, nodes, nf, r0 + pf.seg() + 1);
+		link(w, nodes, nt, r0 + pt.seg());
+		link(w, nodes, nt, r0 + pt.seg() + 1);
+		if (pf.seg() == pt.seg()) link(w, nodes, nf, nt);
+		for (int i = 0; i < n; i++) {
+			for (int j = i + 1; j < n; j++) {
+				if (w[i][j] == Double.POSITIVE_INFINITY && horiz(nodes.get(i), nodes.get(j)) > 0.05 && clear.test(nodes.get(i), nodes.get(j))) link(w, nodes, i, j);
+			}
+		}
+		// Dijkstra from 0 to 1
+		double[] dist = new double[n];
+		int[] prev = new int[n];
+		boolean[] done = new boolean[n];
+		Arrays.fill(dist, Double.POSITIVE_INFINITY);
+		Arrays.fill(prev, -1);
+		dist[0] = 0;
+		for (int k = 0; k < n; k++) {
+			int u = -1;
+			for (int i = 0; i < n; i++) if (!done[i] && (u < 0 || dist[i] < dist[u])) u = i;
+			if (u < 0 || dist[u] == Double.POSITIVE_INFINITY) break;
+			done[u] = true;
+			for (int v = 0; v < n; v++) {
+				if (dist[u] + w[u][v] < dist[v]) {
+					dist[v] = dist[u] + w[u][v];
+					prev[v] = u;
+				}
+			}
+		}
+		if (prev[1] < 0) return List.of(to);
+		List<Vec3> path = new ArrayList<>();
+		for (int v = 1; v != 0; v = prev[v]) path.add(0, nodes.get(v));
+		List<Vec3> out = new ArrayList<>();
+		Vec3 last = from;
+		for (Vec3 q : path) {
+			if (horiz(q, last) > 0.05 || q == to) out.add(q);
+			last = q;
+		}
+		return out;
+	}
+
+	private static void link(double[][] w, List<Vec3> nodes, int a, int b) {
+		double d = horiz(nodes.get(a), nodes.get(b));
+		w[a][b] = Math.min(w[a][b], d);
+		w[b][a] = Math.min(w[b][a], d);
 	}
 
 	/** Where to head next to get from {@code pos} to {@code target} along the route. */

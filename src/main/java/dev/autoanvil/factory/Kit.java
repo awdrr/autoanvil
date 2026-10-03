@@ -87,7 +87,8 @@ public final class Kit {
 		ItemStack sample = new ItemStack(item);
 		List<Holder<Enchantment>> applicable = new ArrayList<>();
 		for (Holder<Enchantment> e : Catalog.all(access)) if (e.value().canEnchant(sample)) applicable.add(e);
-		List<Holder<Enchantment>> wanted = Catalog.wanted(applicable, AutoAnvil.CONFIG.profiles.get(Catalog.itemKind(sample)));
+		String kind = Catalog.itemKind(sample);
+		List<Holder<Enchantment>> wanted = Catalog.wanted(kind, applicable, AutoAnvil.CONFIG.profiles.get(kind));
 		Map<Holder<Enchantment>, Integer> out = new LinkedHashMap<>();
 		for (Holder<Enchantment> e : wanted) {
 			int lvl = TradeBook.get().bestLevel(e);

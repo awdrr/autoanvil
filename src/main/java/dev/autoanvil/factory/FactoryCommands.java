@@ -79,6 +79,16 @@ public final class FactoryCommands {
 					c.getSource().sendFeedback(Component.literal("Progress reset: counting from 0 again."));
 					return 1;
 				}))
+				.then(ClientCommandManager.literal("dropspot").executes(FactoryCommands::dropSpot)
+						.then(ClientCommandManager.literal("clear").executes(c -> {
+							Factory.cfg.dropSpot = null;
+							Factory.cfg.save();
+							c.getSource().sendFeedback(Component.literal("Drop spot cleared."));
+							return 1;
+						})))
+				.then(ClientCommandManager.literal("spare")
+						.then(ClientCommandManager.literal("chest").executes(c -> spare(c, "chest")))
+						.then(ClientCommandManager.literal("drop").executes(c -> spare(c, "drop"))))
 				.then(ClientCommandManager.literal("forget").executes(c -> {
 					TradeBook.reset();
 					c.getSource().sendFeedback(Component.literal("All recorded trades forgotten."));
@@ -109,7 +119,8 @@ public final class FactoryCommands {
 				" 4. /kitfactory survey  - walks the hall and opens every villager once",
 				" 5. /kitfactory trades  - check / edit prices",
 				" 6. /kitfactory items  - how many of each, bought or crafted (27 each by default), then /kitfactory start",
-				"Also: stop, status, buy <item> [n], craft <item> [n], set <item|all> <n>, reset, forget, string <command>"};
+				"Also: stop, status, buy <item> [n], craft <item> [n], set <item|all> <n>, reset, forget, string <command>,",
+				"  dropspot (where to throw spare emerald blocks), spare chest|drop"};
 		for (String l : lines) c.getSource().sendFeedback(Component.literal(l));
 		return 1;
 	}
@@ -154,6 +165,25 @@ public final class FactoryCommands {
 		c.getSource().sendFeedback(Component.literal("Base set here. Anvil: " + (anvil == null ? "none in reach!" : anvil.toShortString())
 				+ ", crafting table: " + (table == null ? "none in reach!" : table.toShortString())
 				+ ", grindstone: " + (grind == null ? "none (optional)" : grind.toShortString())));
+		return 1;
+	}
+
+	private static int dropSpot(CommandContext<FabricClientCommandSource> c) {
+		var p = Minecraft.getInstance().player;
+		Factory.cfg.dropSpot = new double[] {p.getX(), p.getY(), p.getZ(), p.getYRot(), p.getXRot()};
+		Factory.cfg.save();
+		c.getSource().sendFeedback(Component.literal("Drop spot set: spare emerald blocks get thrown from here, the way you're looking"
+				+ " (" + (Factory.cfg.spareEmeralds.equals("drop") ? "always" : "once the input chests are full") + "). Keep it near the walkway"
+				+ " and throw them somewhere the factory won't walk over them (lava, cactus, off an edge)."));
+		return 1;
+	}
+
+	private static int spare(CommandContext<FabricClientCommandSource> c, String mode) {
+		Factory.cfg.spareEmeralds = mode;
+		Factory.cfg.save();
+		c.getSource().sendFeedback(Component.literal(mode.equals("chest")
+				? "Spare emeralds: packed into blocks and stored in the input chests (thrown at the drop spot once they're full)."
+				: "Spare emeralds: packed into blocks and thrown at the drop spot" + (Factory.cfg.dropSpot == null ? " - mark it with /kitfactory dropspot." : ".")));
 		return 1;
 	}
 

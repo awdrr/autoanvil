@@ -49,8 +49,19 @@ public final class FactoryConfig {
 	 * you are, so spending them early is cheaper than saving up; around 30 balances that against walking.
 	 */
 	public int xpLevel = 30;
-	/** Most items of one kind worked on per trip. */
-	public int maxBatch = 4;
+	/**
+	 * Fewest of an item made, enchanted and stored together; the factory clears the inventory to fit them (packs
+	 * spare emeralds into blocks, stores or throws the blocks, trades leftover string).
+	 */
+	public Map<String, Integer> batchMin = batch(3, 2, 3);
+	/** Most of an item worked on together, when there's room. */
+	public Map<String, Integer> batchMax = batch(3, 4, 4);
+	/** Loose emeralds kept when packing the rest into blocks (more if the next books cost more). */
+	public int keepEmeralds = 192;
+	/** Spare emerald blocks: "chest" = into the input chests, thrown at the drop spot once they're full; "drop" = always thrown. */
+	public String spareEmeralds = "chest";
+	/** Where to throw spare emerald blocks ({@code /kitfactory dropspot}): x, y, z, yaw, pitch. */
+	public double[] dropSpot;
 	/**
 	 * Bought from villagers, never crafted (a sale whose enchantment clashes with yours is ground clean on the
 	 * grindstone). Everything else in {@link #targets} is crafted from the input chest.
@@ -74,6 +85,24 @@ public final class FactoryConfig {
 	public static final List<String> ITEMS = List.of("minecraft:diamond_helmet", "minecraft:diamond_chestplate",
 			"minecraft:diamond_leggings", "minecraft:diamond_boots", "minecraft:diamond_sword", "minecraft:diamond_pickaxe",
 			"minecraft:diamond_axe", "minecraft:diamond_spear");
+
+	/** Per item: armor pieces, then sword / axe / spear, then pickaxe. */
+	static Map<String, Integer> batch(int armor, int weapons, int pickaxe) {
+		Map<String, Integer> m = new LinkedHashMap<>();
+		for (String id : ITEMS) {
+			m.put(id, id.endsWith("_helmet") || id.endsWith("_chestplate") || id.endsWith("_leggings") || id.endsWith("_boots") ? armor
+					: id.endsWith("_pickaxe") ? pickaxe : weapons);
+		}
+		return m;
+	}
+
+	public int batchMin(String id) {
+		return Math.max(1, batchMin.getOrDefault(id, 1));
+	}
+
+	public int batchMax(String id) {
+		return Math.max(batchMin(id), batchMax.getOrDefault(id, 4));
+	}
 
 	static Map<String, Integer> defaultTargets() {
 		Map<String, Integer> m = new LinkedHashMap<>();
@@ -128,6 +157,9 @@ public final class FactoryConfig {
 		if (c.done == null) c.done = new LinkedHashMap<>();
 		if (c.buy == null) c.buy = defaultBuy();
 		c.targets.keySet().retainAll(ITEMS);
+		if (c.batchMin == null) c.batchMin = batch(3, 2, 3);
+		if (c.batchMax == null) c.batchMax = batch(3, 4, 4);
+		if (c.spareEmeralds == null) c.spareEmeralds = "chest";
 		for (String id : ITEMS) c.targets.putIfAbsent(id, 0);
 		c.save();
 		return c;
