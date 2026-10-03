@@ -33,6 +33,25 @@ public final class Nav {
 		return best;
 	}
 
+	/** Length of the route along the ground. */
+	public static double length(List<Vec3> route) {
+		double s = 0;
+		for (int i = 0; i + 1 < route.size(); i++) s += horiz(route.get(i), route.get(i + 1));
+		return s;
+	}
+
+	/** The point {@code along} blocks down the route (clamped to its ends). */
+	public static Vec3 pointAt(List<Vec3> route, double along) {
+		double s = 0;
+		for (int i = 0; i + 1 < route.size(); i++) {
+			Vec3 a = route.get(i), b = route.get(i + 1);
+			double len = horiz(a, b);
+			if (along <= s + len) return len < 1e-9 ? a : a.add(b.subtract(a).scale(Math.max(0, along - s) / len));
+			s += len;
+		}
+		return route.get(route.size() - 1);
+	}
+
 	/** Where to head next to get from {@code pos} to {@code target} along the route. */
 	public static Vec3 next(List<Vec3> route, Vec3 pos, Vec3 target) {
 		if (route.size() < 2) return target;

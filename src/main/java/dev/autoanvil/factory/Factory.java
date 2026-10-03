@@ -6,6 +6,7 @@ import dev.autoanvil.run.Runner;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,6 +36,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.npc.villager.Villager;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.AbstractContainerMenu;
@@ -51,6 +53,8 @@ import net.minecraft.world.item.trading.MerchantOffers;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.Vec3;
 import org.lwjgl.glfw.GLFW;
 
@@ -105,6 +109,15 @@ public final class Factory {
 	private static final Set<String> fullOutputs = new HashSet<>();
 	private static final Set<String> surveyedThisRun = new HashSet<>();
 	private static final Set<String> unreachable = new HashSet<>();
+	/** Survey visits per villager this run, why the last one failed, and where it stood. */
+	private static final Map<String, Integer> surveyTries = new HashMap<>();
+	private static final Map<String, String> surveyErrors = new LinkedHashMap<>();
+	private static final Map<String, BlockPos> surveyWhere = new HashMap<>();
+	/** The villager the current plan is surveying (its problems don't count towards stopping). */
+	private static String surveying;
+	static final int SURVEY_TRIES = 3;
+	/** Furthest the factory steps off the walkway toward a villager that's out of reach from it. */
+	static final double MAX_STEP_OFF = 2.5;
 	private static final Set<String> toldCrafting = new HashSet<>();
 	private static final Set<String> toldGrinding = new HashSet<>();
 	public static int ground;
@@ -138,6 +151,10 @@ public final class Factory {
 		fullOutputs.clear();
 		surveyedThisRun.clear();
 		unreachable.clear();
+		surveyTries.clear();
+		surveyErrors.clear();
+		surveyWhere.clear();
+		surveying = null;
 		toldCrafting.clear();
 		toldGrinding.clear();
 		failures = 0;
@@ -231,8 +248,14 @@ public final class Factory {
 		if (st == Status.DONE) {
 			steps.pollFirst();
 		} else if (st == Status.FAILED) {
-			failures++;
-			say("Problem: " + s.error + (failures < 4 ? " - trying again" : ""));
+			String sv = surveying;
+			if (sv != null) {
+				surveyErrors.put(sv, s.error);
+				say("Problem: " + s.error + (surveyTries.getOrDefault(sv, 0) < SURVEY_TRIES ? " - trying again" : " - skipping that villager"));
+			} else {
+				failures++;
+				say("Problem: " + s.error + (failures < 4 ? " - trying again" : ""));
+			}
 			StringBuilder inv = new StringBuilder();
 			for (int i = 0; i < 36; i++) {
 				ItemStack it = mc.player.getInventory().getItem(i);
@@ -258,7 +281,8 @@ public final class Factory {
 		List<Vec3> route = cfg.route();
 		long sig = signature(inv) * 31 + Kit.xpPoints(p);
 
-		// 1. survey: every reachable villager not seen yet (all of them on a survey run)
+		// 1. survey: every reachable villager not seen yet (all of them on a survey run); one that doesn't open is tried
+		// again, then listed at the end
 		Villager next = null;
 		double bestAlong = Double.MAX_VALUE;
 		Nav.Proj me = Nav.project(route, p.position());
@@ -266,8 +290,11 @@ public final class Factory {
 			String id = v.getStringUUID();
 			boolean known = TradeBook.get().find(id) != null;
 			if (surveyedThisRun.contains(id) || unreachable.contains(id) || (known && !surveyOnly)) continue;
-			if (!reachable(mc, route, v)) {
+			if (surveyTries.getOrDefault(id, 0) >= SURVEY_TRIES) continue;
+			surveyWhere.put(id, v.blockPosition());
+			if (standFor(mc, route, v.position(), v.getBoundingBox()) == null) {
 				unreachable.add(id);
+				surveyErrors.put(id, "out of reach from the walkway, even " + MAX_STEP_OFF + " blocks off it - add a walkway point closer to it");
 				say("Can't reach the villager at " + v.blockPosition().toShortString() + " from the walkway - add a walkway point closer to it.");
 				continue;
 			}
@@ -279,18 +306,34 @@ public final class Factory {
 		}
 		if (next != null) {
 			Villager v = next;
-			surveyedThisRun.add(v.getStringUUID());
-			plan("survey " + v.getStringUUID(), sig,
+			int n = surveyTries.merge(v.getStringUUID(), 1, Integer::sum);
+			plan("survey " + v.getStringUUID() + " #" + n, sig,
 					walkTo(Nav.spotFor(route, v.position()), "Walking to a villager"),
+					stepUp(v.getUUID()),
 					openVillager(v.getUUID()),
 					record(v.getUUID()),
 					closeScreens());
 			return;
 		}
 		if (surveyOnly) {
+			// servers only send villagers near you: walk on down the walkway and look again, to the end
+			double total = Nav.length(route);
+			if (me.along() < total - 2) {
+				double to = Math.min(total, me.along() + 24);
+				plan("survey sweep " + (int) to, sig, walkTo(Nav.pointAt(route, to), "Walking down the walkway"));
+				return;
+			}
 			int trades = 0;
 			for (TradeBook.Trader t : TradeBook.get().traders) trades += t.offers.size();
-			stop("Survey done: " + TradeBook.get().traders.size() + " villagers, " + trades + " trades saved. Check prices with /kitfactory trades, then /kitfactory start.");
+			int skipped = 0;
+			for (var en : surveyErrors.entrySet()) {
+				if (surveyedThisRun.contains(en.getKey())) continue;
+				skipped++;
+				BlockPos at = surveyWhere.get(en.getKey());
+				say("Skipped the villager at " + (at == null ? "?" : at.toShortString()) + ": " + en.getValue());
+			}
+			stop("Survey done: opened " + surveyedThisRun.size() + " villagers" + (skipped > 0 ? ", skipped " + skipped + " (listed above)" : "") + "; "
+					+ TradeBook.get().traders.size() + " villagers, " + trades + " trades saved. Check prices with /kitfactory trades, then /kitfactory start.");
 			return;
 		}
 		if (TradeBook.get().traders.isEmpty()) {
@@ -408,6 +451,7 @@ public final class Factory {
 				Item item = type;
 				plan("buy " + typeId, sig,
 						walkTo(spot(mc, route, gear.trader()), "Walking to " + gear.trader().label()),
+						stepUp(UUID.fromString(gear.trader().uuid)),
 						openVillager(UUID.fromString(gear.trader().uuid)),
 						buy(gear.trader(), offer, n, s -> s.is(item)),
 						closeScreens());
@@ -510,6 +554,7 @@ public final class Factory {
 			int lv = kit.get(e);
 			plan("buy " + offer.enchant, sig,
 					walkTo(spot(mc, route, trader), "Walking to " + trader.label()),
+					stepUp(UUID.fromString(trader.uuid)),
 					openVillager(UUID.fromString(trader.uuid)),
 					buy(trader, offer, buy, s -> Kit.isBookOf(s, e, lv)),
 					closeScreens());
@@ -552,6 +597,7 @@ public final class Factory {
 		}
 		lastDecision = what;
 		lastSignature = sig;
+		surveying = what.startsWith("survey ") && !what.startsWith("survey sweep") ? what.substring(7, what.indexOf(" #")) : null;
 		steps.addAll(List.of(s));
 	}
 
@@ -617,6 +663,7 @@ public final class Factory {
 		List<Vec3> route = cfg.route();
 		plan("string trade", sig,
 				walkTo(spot(mc, route, entry.getKey()), "Walking to " + entry.getKey().label()),
+				stepUp(UUID.fromString(entry.getKey().uuid)),
 				openVillager(UUID.fromString(entry.getKey().uuid)),
 				tradeString(offer, targetEmeralds, targetLevel),
 				closeScreens());
@@ -646,6 +693,11 @@ public final class Factory {
 
 	/** Walk along the route to a point, holding forward and turning like a player. */
 	static Step walkTo(Vec3 target, String why) {
+		return walk(target, why, false);
+	}
+
+	/** {@code direct}: straight at the target instead of along the walkway. */
+	static Step walk(Vec3 target, String why, boolean direct) {
 		return new Step(why) {
 			Vec3 last;
 			int still;
@@ -669,7 +721,7 @@ public final class Factory {
 					Input.forward(mc, false);
 					return fail("Walking took too long");
 				}
-				Vec3 next = Nav.next(cfg.route(), pos, target);
+				Vec3 next = direct ? target : Nav.next(cfg.route(), pos, target);
 				float yaw = (float) Math.toDegrees(Math.atan2(-(next.x - pos.x), next.z - pos.z));
 				Input.turnToward(mc, yaw, 12f, 25f);
 				float off = Math.abs(Mth.wrapDegrees(yaw - p.getYRot()));
@@ -691,6 +743,7 @@ public final class Factory {
 	static Step openVillager(UUID uuid) {
 		return new Step("Opening a villager") {
 			int aim, aligned, pressedAt = -1, tries;
+			List<Vec3> points;
 
 			Status run(Minecraft mc) {
 				if (mc.screen instanceof MerchantScreen ms) {
@@ -704,14 +757,14 @@ public final class Factory {
 				Entity e = entity(mc, uuid);
 				if (e == null) return fail("That villager isn't loaded (or has moved)");
 				if (pressedAt >= 0) {
-					if (t - pressedAt < 30) return Status.RUNNING;
+					if (t - pressedAt < 30 + 2 * latencyTicks(mc)) return Status.RUNNING;
 					pressedAt = -1;
 					aligned = 0;
 					if (++tries >= 4) return fail("The villager at " + e.blockPosition().toShortString() + " didn't open");
 				}
-				AABB box = e.getBoundingBox();
-				Vec3[] points = {e.getEyePosition(), box.getCenter(), new Vec3(box.getCenter().x, box.minY + box.getYsize() * 0.3, box.getCenter().z)};
-				Vec3 target = points[aim % points.length];
+				if (points == null) points = aimPoints(mc, e);
+				if (points.isEmpty()) return fail(cantAim(mc, e));
+				Vec3 target = points.get(aim % points.size());
 				float[] a = Input.anglesTo(mc.player, target);
 				float err = Input.turnToward(mc, a[0], a[1], 30f);
 				if (err < 1.5f) aligned++;
@@ -722,7 +775,9 @@ public final class Factory {
 						pressedAt = t;
 					} else if (aligned >= 6) {
 						aligned = 0;
-						if (++aim >= points.length * 2) return fail("Can't get the crosshair on the villager at " + e.blockPosition().toShortString() + " (too far or blocked)");
+						if (++aim >= Math.min(12, Math.max(6, points.size()))) return fail("Can't get the crosshair on the villager at " + e.blockPosition().toShortString() + " (too far or blocked)");
+						points = aimPoints(mc, e);
+						if (points.isEmpty()) return fail(cantAim(mc, e));
 					}
 				}
 				return Status.RUNNING;
@@ -1094,6 +1149,8 @@ public final class Factory {
 				if (!(e instanceof Villager v)) return fail("Villager gone");
 				MerchantOffers offers = ms.getMenu().getOffers();
 				TradeBook.Trader tr = TradeBook.get().record(v, offers);
+				surveyedThisRun.add(uuid.toString());
+				failures = 0;
 				StringBuilder sb = new StringBuilder();
 				for (TradeBook.Offer o : tr.offers) {
 					if (sb.length() > 0) sb.append(", ");
@@ -1535,8 +1592,13 @@ public final class Factory {
 	}
 
 	/** Recorded traders that are loaded right now (a villager that died or moved away is skipped). */
+	/**
+	 * Traders still there: loaded, or too far away for the server to have sent them to us yet (servers only send
+	 * villagers within 16-64 blocks), in which case the survey is trusted. One missing close by is gone.
+	 */
 	static Predicate<TradeBook.Trader> around(Minecraft mc) {
-		return t -> entity(mc, UUID.fromString(t.uuid)) != null;
+		Vec3 me = mc.player.position();
+		return t -> entity(mc, UUID.fromString(t.uuid)) != null || Nav.horiz(me, new Vec3(t.x, t.y, t.z)) > 16;
 	}
 
 	static Entity entity(Minecraft mc, UUID uuid) {
@@ -1556,11 +1618,104 @@ public final class Factory {
 		return out;
 	}
 
-	/** Can the crosshair reach this villager from the closest point of the walkway? */
-	static boolean reachable(Minecraft mc, List<Vec3> route, Entity v) {
-		Vec3 spot = Nav.spotFor(route, v.position());
-		Vec3 eye = spot.add(0, mc.player.getEyeHeight(), 0);
-		return Nav.toBox(eye, v.getBoundingBox()) <= mc.player.entityInteractionRange() - 0.25;
+	static boolean inReach(Minecraft mc, Vec3 eye, AABB box) {
+		return Nav.toBox(eye, box) <= mc.player.entityInteractionRange() - 0.3;
+	}
+
+	/**
+	 * Where to stand to reach something at {@code at}: the closest point of the walkway, or if that's out of reach, a
+	 * spot up to {@link #MAX_STEP_OFF} blocks off it toward the thing, over open floor. Null if neither reaches.
+	 */
+	static Vec3 standFor(Minecraft mc, List<Vec3> route, Vec3 at, AABB box) {
+		Vec3 spot = Nav.spotFor(route, at);
+		double eyeH = mc.player.getEyeHeight();
+		if (inReach(mc, spot.add(0, eyeH, 0), box)) return spot;
+		double dx = box.getCenter().x - spot.x, dz = box.getCenter().z - spot.z, len = Math.sqrt(dx * dx + dz * dz);
+		if (len < 1e-6) return null;
+		for (double d = 0.25; d <= MAX_STEP_OFF + 1e-9; d += 0.25) {
+			Vec3 q = new Vec3(spot.x + dx / len * d, spot.y, spot.z + dz / len * d);
+			if (!standable(mc, q)) return null;
+			if (Nav.toBox(q.add(0, eyeH, 0), box) <= mc.player.entityInteractionRange() - 0.6) return q;
+		}
+		return null;
+	}
+
+	/** Room for the player at {@code feet} with floor under it, so stepping there neither bumps into nor falls off anything. */
+	static boolean standable(Minecraft mc, Vec3 feet) {
+		AABB body = mc.player.getDimensions(Pose.STANDING).makeBoundingBox(feet).deflate(0.02);
+		if (!mc.level.noCollision(mc.player, body)) return false;
+		AABB under = new AABB(feet.x - 0.25, feet.y - 0.3, feet.z - 0.25, feet.x + 0.25, feet.y - 0.01, feet.z + 0.25);
+		return !mc.level.noCollision(mc.player, under);
+	}
+
+	/** If the villager is out of reach from where the walkway left us, step straight off it toward the villager. */
+	static Step stepUp(UUID uuid) {
+		return new Step("Stepping up to the villager") {
+			Step walk;
+
+			Status run(Minecraft mc) {
+				if (walk == null) {
+					Entity e = entity(mc, uuid);
+					if (e == null || inReach(mc, mc.player.getEyePosition(), e.getBoundingBox())) return Status.DONE; // (openVillager reports a missing one)
+					Vec3 to = standFor(mc, cfg.route(), e.position(), e.getBoundingBox());
+					if (to == null) return fail("The villager at " + e.blockPosition().toShortString() + " is out of reach from the walkway");
+					walk = walk(to, label, true);
+				}
+				if (walk.wait > 0) {
+					walk.wait--;
+					return Status.RUNNING;
+				}
+				walk.t++;
+				Status st = walk.run(mc);
+				if (st == Status.FAILED) return fail(walk.error);
+				return st;
+			}
+		};
+	}
+
+	static String cantAim(Minecraft mc, Entity e) {
+		double d = Nav.toBox(mc.player.getEyePosition(), e.getBoundingBox());
+		return d > mc.player.entityInteractionRange() - 0.05
+				? "The villager at " + e.blockPosition().toShortString() + " is out of reach from here (" + String.format("%.1f", d) + " blocks, reach is 3)"
+				: "Can't see the villager at " + e.blockPosition().toShortString() + ": blocks or another mob are in the way of every part of it";
+	}
+
+	/**
+	 * Points to aim at on an entity that the crosshair reaches from here without a block or another mob in the way:
+	 * the middle of it top to bottom, then its left and right edges (around a fence post or through a gap), best first.
+	 */
+	static List<Vec3> aimPoints(Minecraft mc, Entity e) {
+		LocalPlayer p = mc.player;
+		Vec3 eye = p.getEyePosition();
+		AABB box = e.getBoundingBox();
+		Vec3 c = box.getCenter();
+		double tx = eye.x - c.x, tz = eye.z - c.z, tl = Math.sqrt(tx * tx + tz * tz);
+		if (tl < 1e-6) return List.of();
+		tx /= tl;
+		tz /= tl;
+		double half = Math.min(box.getXsize(), box.getZsize()) / 2;
+		double reach = p.entityInteractionRange();
+		List<Vec3> out = new ArrayList<>();
+		for (double side : new double[] {0, -0.9, 0.9}) {
+			for (double h : new double[] {0.83, 0.6, 0.4, 0.2, 0.06, 0.95}) {
+				// on the side facing us, so the line of sight leans out as far as the box allows
+				Vec3 q = new Vec3(c.x + tx * half * 0.8 - tz * half * side, box.minY + box.getYsize() * h, c.z + tz * half * 0.8 + tx * half * side);
+				Vec3 far = eye.add(q.subtract(eye).normalize().scale(reach));
+				var entry = box.clip(eye, far);
+				if (entry.isEmpty() || entry.get().distanceTo(eye) > reach - 0.05) continue;
+				Vec3 hit = entry.get();
+				if (mc.level.clip(new ClipContext(eye, hit, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, p)).getType() != HitResult.Type.MISS) continue;
+				boolean other = false;
+				for (Entity o : mc.level.getEntities(p, new AABB(eye, hit).inflate(1), o -> o != e && !o.isSpectator() && o.isPickable())) {
+					if (o.getBoundingBox().inflate(o.getPickRadius()).clip(eye, hit).isPresent()) {
+						other = true;
+						break;
+					}
+				}
+				if (!other) out.add(q);
+			}
+		}
+		return out;
 	}
 
 	/** Where to stand for a recorded trader: next to where it is now (or was). */

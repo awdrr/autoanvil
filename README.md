@@ -108,8 +108,11 @@ the command into chat instead, which is slower.
   emeralds from string trading, it puts the spare ones here, so leave some room. A spare anvil is optional:
   anvils don't break on your server.
 - **Output chest(s)**: empty, with room for all 216 items. Gear doesn't stack, so that's 4 double chests.
-- **Walkway**: a clear path along the villagers. Every villager must be **within 3 blocks** of the line
-  through your path points.
+- **Walkway**: a clear path along the villagers. Walk it down the middle and add a point at each corner and at
+  the far end. A villager more than 3 blocks from that line is reached by stepping up to 2.5 blocks off it,
+  over open floor. The survey walks the whole walkway, so villagers the server hasn't sent you yet (far down a
+  long hall) are found too. It aims around fences, trapdoors and workstations in front of a villager. When
+  it's done, it lists any villager it skipped and why, with its position.
 - **Base**: one spot where the anvil, crafting table, grindstone and chests are all **within 4.5 blocks**.
 - **Your ticks**: open an anvil and tick the enchantments you want for each kind (helmet, boots, sword,
   spear, ...). The factory makes exactly those, at the best level a librarian sells.

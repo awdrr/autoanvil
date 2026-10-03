@@ -83,6 +83,7 @@ final class FactoryTest {
 		final List<String> failures = new ArrayList<>();
 		BlockPos anvil, table, input, output, grindstone;
 		boolean brokeAnvil;
+		int renderDistance;
 		int screenMoves, screenTurns, screenWalkKey;
 		Vec3 lastPos;
 		float lastYaw, lastPitch;
@@ -244,6 +245,12 @@ final class FactoryTest {
 								gear(l, Items.DIAMOND_HELMET, 4, Enchantments.FIRE_PROTECTION, 2), gear(l, Items.DIAMOND_HELMET, 7, Enchantments.UNBREAKING, 2));
 						villager(l, 17.5, y, vz, VillagerProfession.WEAPONSMITH, gear(l, Items.DIAMOND_SWORD, 3, Enchantments.BANE_OF_ARTHROPODS, 3));
 						villager(l, 8.5, y, 7.5, VillagerProfession.LIBRARIAN, sellBook(l, Enchantments.THORNS, 3, 1)); // out of reach
+						// 3.5 blocks off the walkway: reached by stepping off it (and the cheapest Mending, so buying goes there too)
+						villager(l, 10.5, y, 4.3, VillagerProfession.LIBRARIAN, sellBook(l, Enchantments.MENDING, 1, 2));
+						// a fence post in front of the Respiration librarian blocks the middle of it: aim past the post
+						l.setBlock(new BlockPos(7, y + 1, -1), Blocks.OAK_FENCE.defaultBlockState(), 3);
+						// far down the walkway: not sent to the client until the survey walks there
+						villager(l, 60.5, y, vz, VillagerProfession.CLERIC, simple(Items.EMERALD, 1, Items.REDSTONE, 2));
 						ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
 						p.getInventory().clearContent();
 						p.setExperienceLevels(0);
@@ -253,26 +260,38 @@ final class FactoryTest {
 					});
 					next();
 				}
-				case 2 -> { // the far end of the walkway
+				case 2 -> { // the walkway: a corner at 18.5, the far end at 62.5
 					if (in() == 20) cmd(mc, "kitfactory path add");
-					if (in() == 25) server(mc, () -> {
+					if (in() == 22) server(mc, () -> {
+						mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID()).teleportTo(62.5, y, 0.5);
+						return null;
+					});
+					if (in() == 40) cmd(mc, "kitfactory path add");
+					if (in() == 42) server(mc, () -> {
 						mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID()).teleportTo(0.5, y, 0.5);
 						return null;
 					});
-					if (in() == 45) cmd(mc, "kitfactory base");
-					if (in() == 50) look(mc, input);
-					if (in() == 55) cmd(mc, "kitfactory chest input");
-					if (in() == 60) look(mc, output);
-					if (in() == 65) cmd(mc, "kitfactory chest output");
-					if (in() == 70) {
+					if (in() == 50) {
+						renderDistance = mc.options.renderDistance().get();
+						mc.options.renderDistance().set(2); // villagers more than 32 blocks off aren't sent, like a server's tracking range
+					}
+					if (in() == 60) cmd(mc, "kitfactory base");
+					if (in() == 65) look(mc, input);
+					if (in() == 70) cmd(mc, "kitfactory chest input");
+					if (in() == 75) look(mc, output);
+					if (in() == 80) cmd(mc, "kitfactory chest output");
+					if (in() == 85) {
 						cmd(mc, "kitfactory set all 0");
 						cmd(mc, "kitfactory set diamond_helmet 2");
 						cmd(mc, "kitfactory set diamond_sword 1");
 						cmd(mc, "kitfactory set diamond_spear 1");
 					}
-					if (in() < 80) return;
+					if (in() < 100) return;
+					boolean farLoaded = false;
+					for (var e : mc.level.entitiesForRendering()) if (e.getX() > 40) farLoaded = true;
+					check(!farLoaded, "the villager 60 blocks down the walkway isn't loaded on the client before the survey");
 					FactoryConfig f = Factory.cfg;
-					check(f.base != null && f.path.size() == 1 && anvil.equals(FactoryConfig.pos(f.anvil)) && table.equals(FactoryConfig.pos(f.craftingTable))
+					check(f.base != null && f.path.size() == 2 && anvil.equals(FactoryConfig.pos(f.anvil)) && table.equals(FactoryConfig.pos(f.craftingTable))
 							&& f.inputChests.size() == 1 && f.outputChests.size() == 1 && grindstone.equals(FactoryConfig.pos(f.grindstone)),
 							"setup commands marked base, walkway, anvil, crafting table, grindstone and chests");
 					cmd(mc, "kitfactory survey");
@@ -291,7 +310,16 @@ final class FactoryTest {
 							if (o.enchant.equals("minecraft:thorns")) thorns++;
 						}
 					}
-					check(b.traders.size() == 8, "survey walked the hall and recorded the 8 reachable villagers (" + b.traders.size() + ")");
+					check(b.traders.size() == 10, "survey walked the hall and recorded the 10 reachable villagers (" + b.traders.size() + ")");
+					boolean stepped = false, pastPost = false, far = false;
+					for (TradeBook.Trader t : b.traders) {
+						if (t.z > 4) stepped = true;
+						if (t.x > 60) far = true;
+						for (TradeBook.Offer o : t.offers) if (o.enchant.equals("minecraft:respiration")) pastPost = true;
+					}
+					check(stepped, "the villager 3.5 blocks off the walkway was reached by stepping off it");
+					check(pastPost, "the villager behind a fence post was opened by aiming past the post");
+					check(far, "the far villager (not loaded at the start) was found by walking on down the walkway");
 					check(nine == 1 && fire == 1 && sweep == 1, "all 9 trades of the long list recorded, incl. the two that need scrolling");
 					check(fisher == 1 && thorns == 0, "fisherman recorded; the out-of-reach villager skipped");
 					check(Factory.lastMessage.startsWith("Survey done"), "survey reports done (" + Factory.lastMessage + ")");
@@ -488,6 +516,7 @@ final class FactoryTest {
 		}
 
 		void finish(Minecraft mc) {
+			if (renderDistance > 0) mc.options.renderDistance().set(renderDistance);
 			if (failures.isEmpty()) AutoAnvil.LOGGER.info("[factorytest] PASS ({} checks)", checks);
 			else AutoAnvil.LOGGER.error("[factorytest] FAIL: {}", failures);
 			phase = 99;
