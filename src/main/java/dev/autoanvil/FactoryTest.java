@@ -1,0 +1,497 @@
+package dev.autoanvil;
+
+import dev.autoanvil.factory.Factory;
+import dev.autoanvil.factory.FactoryConfig;
+import dev.autoanvil.factory.Input;
+import dev.autoanvil.factory.ItemsScreen;
+import dev.autoanvil.factory.TradeBook;
+import dev.autoanvil.factory.TradesScreen;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Supplier;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Container;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.npc.villager.Villager;
+import net.minecraft.world.entity.npc.villager.VillagerProfession;
+import net.minecraft.world.flag.FeatureFlags;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.enchantment.Enchantment;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.item.enchantment.Enchantments;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
+import net.minecraft.world.item.trading.ItemCost;
+import net.minecraft.world.item.trading.MerchantOffer;
+import net.minecraft.world.item.trading.MerchantOffers;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.LevelSettings;
+import net.minecraft.world.level.WorldDataConfiguration;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.gamerules.GameRules;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.levelgen.WorldOptions;
+import net.minecraft.world.level.levelgen.presets.WorldPresets;
+import net.minecraft.world.phys.Vec3;
+
+/**
+ * Kit Factory end to end, {@code ./gradlew runClient -Pselftest=factory}: a small trading hall in a survival world
+ * (five librarians, one of them with nine trades so its list has to scroll, a fisherman buying string, a villager out
+ * of reach), base with anvil, crafting table, input and output chest. Setup, survey, trades screen and the run all go
+ * through the /kitfactory commands; the anvil is removed once mid-run. Checks the finished items in the output chest
+ * on the server, and that nothing walked or turned while a screen was open.
+ */
+final class FactoryTest {
+	private FactoryTest() {
+	}
+
+	static void register() {
+		R r = new R();
+		ClientTickEvents.END_CLIENT_TICK.register(r::tick);
+		// like the real server: /string fills every free inventory slot with string
+		net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback.EVENT.register((d, reg, env) -> d.register(
+				net.minecraft.commands.Commands.literal("string").executes(ctx -> {
+					ServerPlayer p = ctx.getSource().getPlayerOrException();
+					int n = 0;
+					for (int i = 0; i < 36; i++) {
+						if (p.getInventory().getItem(i).isEmpty()) {
+							p.getInventory().setItem(i, new ItemStack(Items.STRING, 64));
+							n++;
+						}
+					}
+					p.containerMenu.broadcastChanges();
+					return n;
+				})));
+	}
+
+	private static final class R {
+		int phase, ticks, start, checks, y;
+		final List<String> failures = new ArrayList<>();
+		BlockPos anvil, table, input, output, grindstone;
+		boolean brokeAnvil;
+		int screenMoves, screenTurns, screenWalkKey;
+		Vec3 lastPos;
+		float lastYaw, lastPitch;
+		boolean lastScreen;
+
+		void check(boolean ok, String what) {
+			checks++;
+			AutoAnvil.LOGGER.info("[factorytest] {}: {}", ok ? "PASS" : "FAIL", what);
+			if (!ok) failures.add(what);
+		}
+
+		void next() {
+			phase++;
+			start = ticks;
+		}
+
+		int in() {
+			return ticks - start;
+		}
+
+		static <T> T server(Minecraft mc, Supplier<T> s) {
+			return mc.getSingleplayerServer().submit(s).join();
+		}
+
+		void cmd(Minecraft mc, String c) {
+			mc.player.connection.sendCommand(c);
+		}
+
+		void look(Minecraft mc, BlockPos p) {
+			Vec3 d = Vec3.atCenterOf(p).subtract(mc.player.getEyePosition());
+			mc.player.setYRot((float) Math.toDegrees(Math.atan2(-d.x, d.z)));
+			mc.player.setXRot((float) -Math.toDegrees(Math.atan2(d.y, Math.sqrt(d.x * d.x + d.z * d.z))));
+		}
+
+		void tick(Minecraft mc) {
+			ticks++;
+			try {
+				watch(mc);
+				step(mc);
+			} catch (Throwable t) {
+				AutoAnvil.LOGGER.error("[factorytest] FAIL: exception", t);
+				failures.add("exception " + t);
+				finish(mc);
+			}
+		}
+
+		/** Never walk, turn or move with a screen open. */
+		void watch(Minecraft mc) {
+			if (mc.player == null) return;
+			boolean screen = mc.screen != null;
+			if (screen && lastScreen) {
+				if (lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) screenMoves++;
+				if (Math.abs(mc.player.getYRot() - lastYaw) > 0.01 || Math.abs(mc.player.getXRot() - lastPitch) > 0.01) screenTurns++;
+				if (mc.options.keyUp.isDown()) screenWalkKey++;
+			}
+			lastScreen = screen;
+			lastPos = mc.player.position();
+			lastYaw = mc.player.getYRot();
+			lastPitch = mc.player.getXRot();
+		}
+
+		static ItemStack book(ServerLevel l, ResourceKey<Enchantment> k, int lvl) {
+			ItemStack s = new ItemStack(Items.ENCHANTED_BOOK);
+			ItemEnchantments.Mutable m = new ItemEnchantments.Mutable(ItemEnchantments.EMPTY);
+			m.set(l.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(k), lvl);
+			s.set(DataComponents.STORED_ENCHANTMENTS, m.toImmutable());
+			return s;
+		}
+
+		static MerchantOffer sellBook(ServerLevel l, ResourceKey<Enchantment> k, int lvl, int price) {
+			return new MerchantOffer(new ItemCost(Items.EMERALD, price), Optional.of(new ItemCost(Items.BOOK, 1)), book(l, k, lvl), 0, 999999, 1, 0.0f);
+		}
+
+		static MerchantOffer gear(ServerLevel l, Item item, int price, ResourceKey<Enchantment> k, int lvl) {
+			ItemStack s = new ItemStack(item);
+			ItemEnchantments.Mutable m = new ItemEnchantments.Mutable(ItemEnchantments.EMPTY);
+			m.set(l.registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(k), lvl);
+			s.set(DataComponents.ENCHANTMENTS, m.toImmutable());
+			return new MerchantOffer(new ItemCost(Items.EMERALD, price), Optional.empty(), s, 0, 999999, 1, 0.0f);
+		}
+
+		static MerchantOffer simple(Item buy, int n, Item sell, int m) {
+			return new MerchantOffer(new ItemCost(buy, n), Optional.empty(), new ItemStack(sell, m), 0, 999999, 1, 0.0f);
+		}
+
+		static void villager(ServerLevel l, double x, double y, double z, ResourceKey<VillagerProfession> prof, MerchantOffer... offers) {
+			Villager v = new Villager(EntityType.VILLAGER, l);
+			v.setPos(x, y, z);
+			v.setYRot(0);
+			v.setNoAi(true);
+			v.setInvulnerable(true);
+			v.setPersistenceRequired();
+			v.setVillagerData(v.getVillagerData().withProfession(l.registryAccess(), prof).withLevel(5));
+			MerchantOffers mo = new MerchantOffers();
+			for (MerchantOffer o : offers) mo.add(o);
+			v.setOffers(mo);
+			l.addFreshEntity(v);
+		}
+
+		void step(Minecraft mc) {
+			switch (phase) {
+				case 0 -> {
+					if (!(mc.screen instanceof TitleScreen) || mc.getOverlay() != null) return;
+					mc.options.pauseOnLostFocus = false;
+					String name = "autoanvil-factorytest-" + (System.currentTimeMillis() / 1000);
+					LevelSettings settings = new LevelSettings(name, GameType.SURVIVAL, false, Difficulty.PEACEFUL, true,
+							new GameRules(FeatureFlags.DEFAULT_FLAGS), WorldDataConfiguration.DEFAULT);
+					mc.createWorldOpenFlows().createFreshLevel(name, settings, new WorldOptions(99L, false, false),
+							WorldPresets::createFlatWorldDimensions, mc.screen);
+					next();
+				}
+				case 1 -> {
+					if (mc.level == null || mc.player == null || mc.screen != null || in() < 40) return;
+					// fresh factory state, whatever an earlier run saved
+					TradeBook.reset();
+					Factory.cfg = new FactoryConfig();
+					Factory.cfg.save();
+					AutoAnvil.CONFIG = new Config();
+					cmd(mc, "time set noon");
+					cmd(mc, "gamerule advance_time false");
+					y = server(mc, () -> mc.getSingleplayerServer().overworld().getHeight(Heightmap.Types.MOTION_BLOCKING, 0, 0));
+					anvil = new BlockPos(-1, y, 2);
+					table = new BlockPos(0, y, 2);
+					input = new BlockPos(1, y, 2);
+					output = new BlockPos(-2, y, 0);
+					grindstone = new BlockPos(-1, y, -1);
+					server(mc, () -> {
+						ServerLevel l = mc.getSingleplayerServer().overworld();
+						l.setBlock(anvil, Blocks.ANVIL.defaultBlockState(), 3);
+						l.setBlock(table, Blocks.CRAFTING_TABLE.defaultBlockState(), 3);
+						l.setBlock(input, Blocks.CHEST.defaultBlockState(), 3);
+						l.setBlock(output, Blocks.CHEST.defaultBlockState(), 3);
+						l.setBlock(grindstone, Blocks.GRINDSTONE.defaultBlockState(), 3);
+						Container in = (Container) l.getBlockEntity(input);
+						in.setItem(0, new ItemStack(Items.DIAMOND, 64));
+						in.setItem(1, new ItemStack(Items.STICK, 16));
+						in.setItem(2, new ItemStack(Items.BOOK, 64));
+						in.setItem(3, new ItemStack(Items.ANVIL, 2));
+						in.setItem(4, new ItemStack(Items.EMERALD_BLOCK, 2));
+						double vz = -1.5;
+						villager(l, 3.5, y, vz, VillagerProfession.LIBRARIAN,
+								sellBook(l, Enchantments.PROTECTION, 4, 9), sellBook(l, Enchantments.UNBREAKING, 3, 4));
+						villager(l, 5.5, y, vz, VillagerProfession.LIBRARIAN,
+								sellBook(l, Enchantments.PROTECTION, 4, 5), sellBook(l, Enchantments.MENDING, 1, 6));
+						villager(l, 7.5, y, vz, VillagerProfession.LIBRARIAN,
+								sellBook(l, Enchantments.RESPIRATION, 3, 3), sellBook(l, Enchantments.AQUA_AFFINITY, 1, 3));
+						villager(l, 9.5, y, vz, VillagerProfession.LIBRARIAN,
+								sellBook(l, Enchantments.SHARPNESS, 5, 5), sellBook(l, Enchantments.LOOTING, 3, 4));
+						villager(l, 11.5, y, vz, VillagerProfession.LIBRARIAN,
+								simple(Items.PAPER, 24, Items.EMERALD, 1), simple(Items.EMERALD, 9, Items.BOOKSHELF, 1),
+								simple(Items.EMERALD, 1, Items.LANTERN, 1), simple(Items.EMERALD, 1, Items.GLASS, 4),
+								simple(Items.EMERALD, 5, Items.CLOCK, 1), simple(Items.EMERALD, 4, Items.COMPASS, 1),
+								simple(Items.EMERALD, 20, Items.NAME_TAG, 1),
+								sellBook(l, Enchantments.FIRE_ASPECT, 2, 5), sellBook(l, Enchantments.SWEEPING_EDGE, 3, 4));
+						villager(l, 13.5, y, vz, VillagerProfession.FISHERMAN,
+								simple(Items.STRING, 20, Items.EMERALD, 1), simple(Items.EMERALD, 1, Items.COOKED_COD, 6));
+						// gear: a cheap helmet with Fire Protection (would block Protection IV) and a clean one; only a Bane sword
+						villager(l, 15.5, y, vz, VillagerProfession.ARMORER,
+								gear(l, Items.DIAMOND_HELMET, 4, Enchantments.FIRE_PROTECTION, 2), gear(l, Items.DIAMOND_HELMET, 7, Enchantments.UNBREAKING, 2));
+						villager(l, 17.5, y, vz, VillagerProfession.WEAPONSMITH, gear(l, Items.DIAMOND_SWORD, 3, Enchantments.BANE_OF_ARTHROPODS, 3));
+						villager(l, 8.5, y, 7.5, VillagerProfession.LIBRARIAN, sellBook(l, Enchantments.THORNS, 3, 1)); // out of reach
+						ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+						p.getInventory().clearContent();
+						p.setExperienceLevels(0);
+						p.setExperiencePoints(0);
+						p.teleportTo(18.5, y, 0.5);
+						return null;
+					});
+					next();
+				}
+				case 2 -> { // the far end of the walkway
+					if (in() == 20) cmd(mc, "kitfactory path add");
+					if (in() == 25) server(mc, () -> {
+						mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID()).teleportTo(0.5, y, 0.5);
+						return null;
+					});
+					if (in() == 45) cmd(mc, "kitfactory base");
+					if (in() == 50) look(mc, input);
+					if (in() == 55) cmd(mc, "kitfactory chest input");
+					if (in() == 60) look(mc, output);
+					if (in() == 65) cmd(mc, "kitfactory chest output");
+					if (in() == 70) {
+						cmd(mc, "kitfactory set all 0");
+						cmd(mc, "kitfactory set diamond_helmet 2");
+						cmd(mc, "kitfactory set diamond_sword 1");
+						cmd(mc, "kitfactory set diamond_spear 1");
+					}
+					if (in() < 80) return;
+					FactoryConfig f = Factory.cfg;
+					check(f.base != null && f.path.size() == 1 && anvil.equals(FactoryConfig.pos(f.anvil)) && table.equals(FactoryConfig.pos(f.craftingTable))
+							&& f.inputChests.size() == 1 && f.outputChests.size() == 1 && grindstone.equals(FactoryConfig.pos(f.grindstone)),
+							"setup commands marked base, walkway, anvil, crafting table, grindstone and chests");
+					cmd(mc, "kitfactory survey");
+					next();
+				}
+				case 3 -> {
+					if (in() < 10 || Factory.running()) return;
+					TradeBook b = TradeBook.get();
+					int fire = 0, sweep = 0, nine = 0, fisher = 0, thorns = 0;
+					for (TradeBook.Trader t : b.traders) {
+						if (t.offers.size() == 9) nine++;
+						if (t.profession.equals("fisherman")) fisher++;
+						for (TradeBook.Offer o : t.offers) {
+							if (o.enchant.equals("minecraft:fire_aspect")) fire++;
+							if (o.enchant.equals("minecraft:sweeping_edge")) sweep++;
+							if (o.enchant.equals("minecraft:thorns")) thorns++;
+						}
+					}
+					check(b.traders.size() == 8, "survey walked the hall and recorded the 8 reachable villagers (" + b.traders.size() + ")");
+					check(nine == 1 && fire == 1 && sweep == 1, "all 9 trades of the long list recorded, incl. the two that need scrolling");
+					check(fisher == 1 && thorns == 0, "fisherman recorded; the out-of-reach villager skipped");
+					check(Factory.lastMessage.startsWith("Survey done"), "survey reports done (" + Factory.lastMessage + ")");
+					cmd(mc, "kitfactory trades");
+					next();
+				}
+				case 4 -> {
+					if (!(mc.screen instanceof TradesScreen ts)) {
+						if (in() > 40) {
+							check(false, "trades screen opened");
+							next();
+						}
+						return;
+					}
+					if (in() < 50) return;
+					EditBox first = null;
+					for (var c : ts.children()) if (c instanceof EditBox e) {
+						first = e;
+						break;
+					}
+					check(first != null, "trades screen lists prices to edit");
+					if (first != null) {
+						String old = first.getValue();
+						first.setValue("77");
+						TradeBook.Offer o = TradeBook.get().traders.get(0).offers.get(0);
+						check(o.price == 77 && o.manual, "editing a price in the screen changes the recorded price");
+						first.setValue(old);
+						o.manual = false;
+					}
+					ts.onClose();
+					next();
+				}
+				case 5 -> {
+					if (in() < 10) return;
+					cmd(mc, "kitfactory start");
+					next();
+				}
+				case 6 -> {
+					// break the anvil once while it is combining
+					if (!brokeAnvil && AutoAnvil.running() && AutoAnvil.runner.stepsDone >= 1) {
+						brokeAnvil = true;
+						server(mc, () -> mc.getSingleplayerServer().overworld().removeBlock(anvil, false));
+						AutoAnvil.LOGGER.info("[factorytest] anvil removed mid-run");
+					}
+					if (in() % 200 == 0) AutoAnvil.LOGGER.info("[factorytest] {}s: {} | {}", in() / 20, Factory.status, Factory.progress());
+					if (Factory.running() && in() < 20 * 60 * 12) return;
+					check(!Factory.running(), "factory finished within 12 minutes");
+					check(Factory.lastMessage.startsWith("All done"), "factory says all done (" + Factory.lastMessage + ")");
+					check(brokeAnvil, "the anvil was removed mid-run");
+					boolean anvilBack = server(mc, () -> mc.getSingleplayerServer().overworld().getBlockState(anvil).is(net.minecraft.tags.BlockTags.ANVIL));
+					check(anvilBack, "a spare anvil was placed where the old one was");
+					List<ItemStack> out = server(mc, () -> {
+						List<ItemStack> l = new ArrayList<>();
+						Container c = (Container) mc.getSingleplayerServer().overworld().getBlockEntity(output);
+						for (int i = 0; i < c.getContainerSize(); i++) if (!c.getItem(i).isEmpty()) l.add(c.getItem(i).copy());
+						return l;
+					});
+					int helmets = 0, swords = 0;
+					for (ItemStack s : out) {
+						AutoAnvil.LOGGER.info("[factorytest] output: {}", describe(s));
+						if (s.is(Items.DIAMOND_HELMET) && lvl(mc, s, Enchantments.PROTECTION) == 4 && lvl(mc, s, Enchantments.UNBREAKING) == 3
+								&& lvl(mc, s, Enchantments.MENDING) == 1 && lvl(mc, s, Enchantments.RESPIRATION) == 3 && lvl(mc, s, Enchantments.AQUA_AFFINITY) == 1) helmets++;
+						if (s.is(Items.DIAMOND_SWORD) && lvl(mc, s, Enchantments.SHARPNESS) == 5 && lvl(mc, s, Enchantments.UNBREAKING) == 3
+								&& lvl(mc, s, Enchantments.MENDING) == 1 && lvl(mc, s, Enchantments.LOOTING) == 3 && lvl(mc, s, Enchantments.FIRE_ASPECT) == 2
+								&& lvl(mc, s, Enchantments.SWEEPING_EDGE) == 3) swords++;
+					}
+					check(helmets == 2, "output chest: 2 diamond helmets with Prot IV, Unbreaking III, Mending, Respiration III, Aqua Affinity (" + helmets + ")");
+					int fireProt = 0;
+					for (ItemStack s : out) if (lvl(mc, s, Enchantments.FIRE_PROTECTION) > 0 || lvl(mc, s, Enchantments.BANE_OF_ARTHROPODS) > 0) fireProt++;
+					check(fireProt == 0, "no item with a clashing enchantment (Fire Protection helmet / Bane sword) was bought");
+					int diamonds = diamonds(mc);
+					check(diamonds == 63, "helmets and sword bought from villagers, only the spear crafted (1 of 64 diamonds used, " + (64 - diamonds) + ")");
+					check(emeraldBlocks(mc) == 2, "emerald blocks in the input chest left alone: emeralds come from string (" + emeraldBlocks(mc) + " of 2 left)");
+					check(Factory.ground >= 1, "the Bane of Arthropods sword was ground clean before enchanting (" + Factory.ground + ")");
+					int spears = 0;
+					for (ItemStack s : out) if (s.is(Items.DIAMOND_SPEAR) && lvl(mc, s, Enchantments.SHARPNESS) == 5 && lvl(mc, s, Enchantments.UNBREAKING) == 3
+							&& lvl(mc, s, Enchantments.MENDING) == 1) spears++;
+					check(spears == 1, "output chest: 1 crafted diamond spear with Sharpness V, Unbreaking III, Mending (" + spears + ")");
+					check(swords == 1, "output chest: 1 diamond sword with Sharpness V, Unbreaking III, Mending, Looting III, Fire Aspect II, Sweeping Edge III (" + swords + ")");
+					check(Factory.cfg.done.getOrDefault("minecraft:diamond_helmet", 0) == 2 && Factory.cfg.done.getOrDefault("minecraft:diamond_sword", 0) == 1
+									&& Factory.cfg.done.getOrDefault("minecraft:diamond_spear", 0) == 1,
+							"progress counted: " + Factory.progress());
+					check(screenWalkKey == 0 && screenTurns == 0, "never held forward or turned with a screen open (" + screenWalkKey + ", " + screenTurns + ")");
+					check(screenMoves == 0, "never moved with a screen open (" + screenMoves + ")");
+					next();
+				}
+				case 7 -> { // a pickaxe: on the buy list, but nobody here sells one
+					if (in() < 10) return;
+					cmd(mc, "kitfactory buy pickaxe 1");
+					check(Factory.cfg.targets.get("minecraft:diamond_pickaxe") == 1 && Factory.cfg.buy.contains("minecraft:diamond_pickaxe"),
+							"'/kitfactory buy pickaxe 1' sets the amount and Buy");
+					cmd(mc, "kitfactory start");
+					next();
+				}
+				case 8 -> {
+					if (Factory.running() && in() < 20 * 90) return;
+					check(!Factory.running() && Factory.lastMessage.startsWith("No villager sells Diamond Pickaxe"),
+							"a pickaxe nobody sells is not crafted: the factory stops and says so (" + Factory.lastMessage + ")");
+					boolean pickaxe = server(mc, () -> {
+						ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+						for (int i = 0; i < 36; i++) if (p.getInventory().getItem(i).is(Items.DIAMOND_PICKAXE)) return true;
+						return false;
+					});
+					check(diamonds(mc) == 63 && !pickaxe, "no diamonds used for it (" + (64 - diamonds(mc)) + " used in all)");
+					cmd(mc, "kitfactory items");
+					next();
+				}
+				case 9 -> { // the items screen: switch the pickaxe to Craft, 1 of them
+					if (!(mc.screen instanceof ItemsScreen is)) {
+						if (in() > 40) {
+							check(false, "items screen opened");
+							finish(mc);
+						}
+						return;
+					}
+					if (in() < 50) return;
+					String id = "minecraft:diamond_pickaxe";
+					var box = is.amountBox(id);
+					var how = is.sourceButton(id);
+					check(box != null && how != null && how.getMessage().getString().equals("Buy") && box.getValue().equals("1"),
+							"items screen shows the pickaxe: amount 1, Buy");
+					if (box == null || how == null) {
+						finish(mc);
+						return;
+					}
+					box.setValue("");
+					box.setValue("1");
+					Input.click(is, how.getX() + how.getWidth() / 2.0, how.getY() + how.getHeight() / 2.0, 0, false);
+					check(how.getMessage().getString().equals("Craft") && !Factory.cfg.buy.contains(id) && Factory.cfg.targets.get(id) == 1,
+							"clicking Buy switches it to Craft");
+					is.onClose();
+					next();
+				}
+				case 10 -> {
+					if (in() < 10) return;
+					cmd(mc, "kitfactory start");
+					next();
+				}
+				case 11 -> {
+					if (in() % 200 == 0) AutoAnvil.LOGGER.info("[factorytest] {}s: {} | {}", in() / 20, Factory.status, Factory.progress());
+					if (Factory.running() && in() < 20 * 60 * 6) return;
+					check(Factory.lastMessage.startsWith("All done"), "pickaxe set to Craft: factory finishes (" + Factory.lastMessage + ")");
+					int pickaxes = server(mc, () -> {
+						int n = 0;
+						Container c = (Container) mc.getSingleplayerServer().overworld().getBlockEntity(output);
+						for (int i = 0; i < c.getContainerSize(); i++) {
+							ItemStack s = c.getItem(i);
+							if (s.is(Items.DIAMOND_PICKAXE)) {
+								AutoAnvil.LOGGER.info("[factorytest] output: {}", describe(s));
+								if (lvl(mc, s, Enchantments.UNBREAKING) == 3 && lvl(mc, s, Enchantments.MENDING) == 1) n++;
+							}
+						}
+						return n;
+					});
+					check(pickaxes == 1, "output chest: 1 crafted diamond pickaxe with Unbreaking III + Mending (" + pickaxes + ")");
+					check(diamonds(mc) == 60, "the pickaxe took 3 diamonds from the chest (" + (64 - diamonds(mc)) + " used in all)");
+					check(emeraldBlocks(mc) == 2, "emerald blocks still untouched");
+					finish(mc);
+				}
+				default -> {
+				}
+			}
+		}
+
+		int emeraldBlocks(Minecraft mc) {
+			return server(mc, () -> {
+				int n = 0;
+				Container c = (Container) mc.getSingleplayerServer().overworld().getBlockEntity(input);
+				for (int i = 0; i < c.getContainerSize(); i++) if (c.getItem(i).is(Items.EMERALD_BLOCK)) n += c.getItem(i).getCount();
+				return n;
+			});
+		}
+
+		int diamonds(Minecraft mc) {
+			return server(mc, () -> {
+				int n = 0;
+				Container c = (Container) mc.getSingleplayerServer().overworld().getBlockEntity(input);
+				for (int i = 0; i < c.getContainerSize(); i++) if (c.getItem(i).is(Items.DIAMOND)) n += c.getItem(i).getCount();
+				ServerPlayer p = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+				for (int i = 0; i < 36; i++) if (p.getInventory().getItem(i).is(Items.DIAMOND)) n += p.getInventory().getItem(i).getCount();
+				return n;
+			});
+		}
+
+		static int lvl(Minecraft mc, ItemStack s, ResourceKey<Enchantment> k) {
+			Holder<Enchantment> h = mc.getSingleplayerServer().registryAccess().lookupOrThrow(Registries.ENCHANTMENT).getOrThrow(k);
+			return EnchantmentHelper.getEnchantmentsForCrafting(s).getLevel(h);
+		}
+
+		static String describe(ItemStack s) {
+			StringBuilder sb = new StringBuilder(s.getHoverName().getString()).append(" {");
+			for (var e : EnchantmentHelper.getEnchantmentsForCrafting(s).entrySet()) sb.append(' ').append(Catalog.id(e.getKey())).append('=').append(e.getIntValue());
+			return sb.append(" }").toString();
+		}
+
+		void finish(Minecraft mc) {
+			if (failures.isEmpty()) AutoAnvil.LOGGER.info("[factorytest] PASS ({} checks)", checks);
+			else AutoAnvil.LOGGER.error("[factorytest] FAIL: {}", failures);
+			phase = 99;
+			mc.stop();
+		}
+	}
+}

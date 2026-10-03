@@ -1,0 +1,148 @@
+package dev.autoanvil.factory;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import dev.autoanvil.AutoAnvil;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.Vec3;
+
+/** {@code config/autoanvil-factory.json}: the hall layout you marked and how many of each item to make. */
+public final class FactoryConfig {
+	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+	/** Where you stand to reach the anvil, crafting table and chests ({@code /kitfactory base}). */
+	public double[] base;
+	/** Walkway along the villagers, after the base ({@code /kitfactory path add}). */
+	public List<double[]> path = new ArrayList<>();
+	public int[] anvil;
+	public int[] craftingTable;
+	/** Optional: villager gear whose enchantments clash with yours (Fire Protection vs Protection IV) is ground clean here. */
+	public int[] grindstone;
+	/** Plain books, diamonds and sticks for crafted items, spare anvils. Spare emeralds are stored here too. */
+	public List<int[]> inputChests = new ArrayList<>();
+	/** Finished items go here, in order. */
+	public List<int[]> outputChests = new ArrayList<>();
+	/** Server command that gives string (without the slash). */
+	public String stringCommand = "string";
+	/**
+	 * Send the string command while the fisherman's screen stays open (like the old string macro: faster, no closing
+	 * and reopening). That means the mod sends the command itself; a player can't type in chat with a screen open.
+	 * false: close the screen and type it into chat like a player.
+	 */
+	public boolean stringInGui = true;
+	/** Ask for more string when less than this is left, so it arrives before it runs out. */
+	public int stringAskBelow = 128;
+	/** At most one string command this often. */
+	public int stringIntervalMs = 1000;
+	/** If the command gave nothing, wait this long before trying again. */
+	public int stringRetrySeconds = 30;
+	/**
+	 * Trade XP up to this level, then spend it at the anvil, then come back for more. Levels get dearer the higher
+	 * you are, so spending them early is cheaper than saving up; around 30 balances that against walking.
+	 */
+	public int xpLevel = 30;
+	/** Most items of one kind worked on per trip. */
+	public int maxBatch = 4;
+	/**
+	 * Bought from villagers, never crafted (a sale whose enchantment clashes with yours is ground clean on the
+	 * grindstone). Everything else in {@link #targets} is crafted from the input chest.
+	 */
+	public List<String> buy = defaultBuy();
+	/** How many to make, in this order. */
+	public Map<String, Integer> targets = defaultTargets();
+	/** How many are finished and in the output chests. */
+	public Map<String, Integer> done = new LinkedHashMap<>();
+
+	static List<String> defaultBuy() {
+		List<String> l = new ArrayList<>();
+		for (String s : new String[] {"diamond_helmet", "diamond_chestplate", "diamond_leggings", "diamond_boots",
+				"diamond_sword", "diamond_pickaxe", "diamond_axe"}) {
+			l.add("minecraft:" + s);
+		}
+		return l;
+	}
+
+	/** Everything the factory can make, in the order it works through them. */
+	public static final List<String> ITEMS = List.of("minecraft:diamond_helmet", "minecraft:diamond_chestplate",
+			"minecraft:diamond_leggings", "minecraft:diamond_boots", "minecraft:diamond_sword", "minecraft:diamond_pickaxe",
+			"minecraft:diamond_axe", "minecraft:diamond_spear");
+
+	static Map<String, Integer> defaultTargets() {
+		Map<String, Integer> m = new LinkedHashMap<>();
+		for (String s : ITEMS) m.put(s, 27);
+		return m;
+	}
+
+	/** "pickaxe", "diamond_pickaxe" or "minecraft:diamond_pickaxe" to the item id; null if it isn't one of {@link #ITEMS}. */
+	public static String resolve(String name) {
+		String n = name.toLowerCase(java.util.Locale.ROOT);
+		for (String id : ITEMS) {
+			if (id.equals(n) || id.equals("minecraft:" + n) || id.equals("minecraft:diamond_" + n)) return id;
+		}
+		return null;
+	}
+
+	public Vec3 baseVec() {
+		return base == null ? null : new Vec3(base[0], base[1], base[2]);
+	}
+
+	/** Base first, then the walkway points. */
+	public List<Vec3> route() {
+		List<Vec3> r = new ArrayList<>();
+		if (base != null) r.add(baseVec());
+		for (double[] p : path) r.add(new Vec3(p[0], p[1], p[2]));
+		return r;
+	}
+
+	public static BlockPos pos(int[] a) {
+		return a == null ? null : new BlockPos(a[0], a[1], a[2]);
+	}
+
+	public static int[] arr(BlockPos p) {
+		return new int[] {p.getX(), p.getY(), p.getZ()};
+	}
+
+	public static FactoryConfig load() {
+		Path file = path();
+		FactoryConfig c = new FactoryConfig();
+		try {
+			if (Files.exists(file)) {
+				FactoryConfig read = GSON.fromJson(Files.readString(file), FactoryConfig.class);
+				if (read != null) c = read;
+			}
+		} catch (Exception e) {
+			AutoAnvil.LOGGER.warn("Could not read {}: {}", file, e.toString());
+		}
+		if (c.path == null) c.path = new ArrayList<>();
+		if (c.inputChests == null) c.inputChests = new ArrayList<>();
+		if (c.outputChests == null) c.outputChests = new ArrayList<>();
+		if (c.targets == null || c.targets.isEmpty()) c.targets = defaultTargets();
+		if (c.done == null) c.done = new LinkedHashMap<>();
+		if (c.buy == null) c.buy = defaultBuy();
+		c.targets.keySet().retainAll(ITEMS);
+		for (String id : ITEMS) c.targets.putIfAbsent(id, 0);
+		c.save();
+		return c;
+	}
+
+	public void save() {
+		try {
+			Files.createDirectories(path().getParent());
+			Files.writeString(path(), GSON.toJson(this));
+		} catch (IOException e) {
+			AutoAnvil.LOGGER.warn("Could not write {}: {}", path(), e.toString());
+		}
+	}
+
+	private static Path path() {
+		return FabricLoader.getInstance().getConfigDir().resolve("autoanvil-factory.json");
+	}
+}
