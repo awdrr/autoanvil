@@ -84,6 +84,8 @@ final class FactoryTest {
 		BlockPos anvil, table, input, output, grindstone;
 		boolean brokeAnvil;
 		int renderDistance, strafeTicks, blocksBefore;
+		String xpFisher;
+		int decisionsBefore;
 		int screenMoves, screenTurns, screenWalkKey;
 		Vec3 lastPos;
 		float lastYaw, lastPitch;
@@ -241,6 +243,10 @@ final class FactoryTest {
 								sellBook(l, Enchantments.FIRE_ASPECT, 2, 5), sellBook(l, Enchantments.SWEEPING_EDGE, 3, 4));
 						villager(l, 13.5, y, vz, VillagerProfession.FISHERMAN,
 								simple(Items.STRING, 20, Items.EMERALD, 1), simple(Items.EMERALD, 1, Items.COOKED_COD, 6));
+						// a second fisherman, for levels: netherrack and fire in front of it burn the emeralds thrown its way
+						villager(l, 19.5, y, vz, VillagerProfession.FISHERMAN, simple(Items.STRING, 20, Items.EMERALD, 1));
+						l.setBlock(new BlockPos(19, y, -1), Blocks.NETHERRACK.defaultBlockState(), 3);
+						l.setBlock(new BlockPos(19, y + 1, -1), net.minecraft.world.level.block.BaseFireBlock.getState(l, new BlockPos(19, y + 1, -1)), 3);
 						// gear: a cheap helmet with Fire Protection (would block Protection IV) and a clean one; only a Bane sword
 						villager(l, 15.5, y, vz, VillagerProfession.ARMORER,
 								gear(l, Items.DIAMOND_HELMET, 4, Enchantments.FIRE_PROTECTION, 2), gear(l, Items.DIAMOND_HELMET, 7, Enchantments.UNBREAKING, 2));
@@ -264,7 +270,20 @@ final class FactoryTest {
 				}
 				case 2 -> { // the walkway: a corner at 18.5, the far end at 62.5
 					if (in() == 20) cmd(mc, "kitfactory path add");
-					if (in() == 22) server(mc, () -> {
+					if (in() == 21) { // look at the fisherman with the fire in front and mark it for levels
+						for (var e : mc.level.entitiesForRendering()) {
+							if (e instanceof Villager v && Math.abs(v.getX() - 19.5) < 0.3) {
+								Vec3 d = v.getEyePosition().subtract(mc.player.getEyePosition());
+								mc.player.setYRot((float) Math.toDegrees(Math.atan2(-d.x, d.z)));
+								mc.player.setXRot((float) -Math.toDegrees(Math.atan2(d.y, Math.sqrt(d.x * d.x + d.z * d.z))));
+							}
+						}
+					}
+					if (in() == 24) {
+						cmd(mc, "kitfactory fisherman xp");
+						xpFisher = Factory.cfg.xpFisherman;
+					}
+					if (in() == 26) server(mc, () -> {
 						mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID()).teleportTo(62.5, y, 0.5);
 						return null;
 					});
@@ -312,7 +331,9 @@ final class FactoryTest {
 							if (o.enchant.equals("minecraft:thorns")) thorns++;
 						}
 					}
-					check(b.traders.size() == 10, "survey walked the hall and recorded the 10 reachable villagers (" + b.traders.size() + ")");
+					check(b.traders.size() == 11, "survey walked the hall and recorded the 11 reachable villagers (" + b.traders.size() + ")");
+					check(xpFisher != null && b.find(xpFisher) != null && b.find(xpFisher).x > 19,
+							"'/kitfactory fisherman xp' marked the fisherman with the fire in front");
 					boolean stepped = false, pastPost = false, far = false;
 					for (TradeBook.Trader t : b.traders) {
 						if (t.z > 4) stepped = true;
@@ -323,7 +344,7 @@ final class FactoryTest {
 					check(pastPost, "the villager behind a fence post was opened by aiming past the post");
 					check(far, "the far villager (not loaded at the start) was found by walking on down the walkway");
 					check(nine == 1 && fire == 1 && sweep == 1, "all 9 trades of the long list recorded, incl. the two that need scrolling");
-					check(fisher == 1 && thorns == 0, "fisherman recorded; the out-of-reach villager skipped");
+					check(fisher == 2 && thorns == 0, "both fishermen recorded; the out-of-reach villager skipped");
 					check(Factory.lastMessage.startsWith("Survey done"), "survey reports done (" + Factory.lastMessage + ")");
 					cmd(mc, "kitfactory trades");
 					next();
@@ -404,6 +425,18 @@ final class FactoryTest {
 					check(Factory.batchSizes.getOrDefault("minecraft:diamond_helmet", 0) == 2,
 							"both helmets enchanted together although the inventory started full of emeralds (" + Factory.batchSizes + ")");
 					check(Factory.storedSizes.equals(List.of(2, 1, 1)), "each trip to the output chest stored a whole batch " + Factory.storedSizes);
+					check(Factory.decisions.contains("xp trade") && Factory.thrownEmeralds >= 100,
+							"levels traded at the fisherman for levels, its emeralds thrown out of the window (" + Factory.thrownEmeralds + ")");
+					int unburnt = server(mc, () -> {
+						int n = 0;
+						for (var e : mc.getSingleplayerServer().overworld().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+								new net.minecraft.world.phys.AABB(19.5, y, -1, 19.5, y, -1).inflate(4))) {
+							if (e.getItem().is(Items.EMERALD)) n += e.getItem().getCount();
+						}
+						return n;
+					});
+					AutoAnvil.LOGGER.info("[factorytest] emeralds thrown {}, still lying by the fire {}", Factory.thrownEmeralds, unburnt);
+					check(unburnt < Factory.thrownEmeralds, "the thrown emeralds went into the fire (" + unburnt + " of " + Factory.thrownEmeralds + " left lying there)");
 					check(strafeTicks > 20, "walked to villagers strafing with A/D while looking at them (" + strafeTicks + " ticks)");
 					check(Factory.ground >= 1, "the Bane of Arthropods sword was ground clean before enchanting (" + Factory.ground + ")");
 					int g = Factory.decisions.indexOf("grind minecraft:diamond_sword");
@@ -478,8 +511,15 @@ final class FactoryTest {
 				case 10 -> { // full of emeralds again, and spare blocks thrown at the drop spot this time
 					if (in() == 2) cmd(mc, "kitfactory spare drop");
 					if (in() < 10) return;
-					fillWithEmeralds(mc, 26, 8); // too many blocks to fit two pickaxes and their books: some get thrown
+					server(mc, () -> { // no emeralds left over: the books need a trip to the emerald fisherman
+						ServerPlayer sp = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+						for (int i = 0; i < 36; i++) if (sp.getInventory().getItem(i).is(Items.EMERALD)) sp.getInventory().setItem(i, ItemStack.EMPTY);
+						sp.inventoryMenu.broadcastChanges();
+						return null;
+					});
+					fillWithEmeralds(mc, 28, 0); // too many blocks to fit two pickaxes and their books, and no emeralds
 					blocksBefore = emeraldBlocks(mc);
+					decisionsBefore = Factory.decisions.size();
 					cmd(mc, "kitfactory start");
 					next();
 				}
@@ -512,7 +552,10 @@ final class FactoryTest {
 						}
 						return n;
 					});
-					check(thrown >= 64 * 26, "spare emerald blocks thrown at the drop spot (" + thrown + ")");
+					check(thrown >= 64 * 28, "spare emerald blocks thrown at the drop spot (" + thrown + ")");
+					List<String> late = Factory.decisions.subList(decisionsBefore, Factory.decisions.size());
+					check(late.contains("string trade") && late.indexOf("string trade") < late.indexOf("xp trade") || late.contains("string trade") && !late.contains("xp trade"),
+							"emeralds for the pickaxe books came from the other fisherman, kept (" + late + ")");
 					check(emeraldBlocks(mc) == blocksBefore, "drop mode: no blocks put in or taken from the chest (" + emeraldBlocks(mc) + " vs " + blocksBefore + ")");
 					finish(mc);
 				}

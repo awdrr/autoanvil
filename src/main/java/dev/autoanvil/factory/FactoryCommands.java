@@ -86,6 +86,14 @@ public final class FactoryCommands {
 							c.getSource().sendFeedback(Component.literal("Drop spot cleared."));
 							return 1;
 						})))
+				.then(ClientCommandManager.literal("fisherman")
+						.then(ClientCommandManager.literal("xp").executes(FactoryCommands::xpFisherman))
+						.then(ClientCommandManager.literal("clear").executes(c -> {
+							Factory.cfg.xpFisherman = null;
+							Factory.cfg.save();
+							c.getSource().sendFeedback(Component.literal("No fisherman for levels: one fisherman does emeralds and levels."));
+							return 1;
+						})))
 				.then(ClientCommandManager.literal("spare")
 						.then(ClientCommandManager.literal("chest").executes(c -> spare(c, "chest")))
 						.then(ClientCommandManager.literal("drop").executes(c -> spare(c, "drop"))))
@@ -120,7 +128,7 @@ public final class FactoryCommands {
 				" 5. /kitfactory trades  - check / edit prices",
 				" 6. /kitfactory items  - how many of each, bought or crafted (27 each by default), then /kitfactory start",
 				"Also: stop, status, buy <item> [n], craft <item> [n], set <item|all> <n>, reset, forget, string <command>,",
-				"  dropspot (where to throw spare emerald blocks), spare chest|drop"};
+				"  dropspot (where to throw spare emerald blocks), spare chest|drop, fisherman xp|clear (look at it)"};
 		for (String l : lines) c.getSource().sendFeedback(Component.literal(l));
 		return 1;
 	}
@@ -165,6 +173,21 @@ public final class FactoryCommands {
 		c.getSource().sendFeedback(Component.literal("Base set here. Anvil: " + (anvil == null ? "none in reach!" : anvil.toShortString())
 				+ ", crafting table: " + (table == null ? "none in reach!" : table.toShortString())
 				+ ", grindstone: " + (grind == null ? "none (optional)" : grind.toShortString())));
+		return 1;
+	}
+
+	private static int xpFisherman(CommandContext<FabricClientCommandSource> c) {
+		Minecraft mc = Minecraft.getInstance();
+		if (!(mc.hitResult instanceof net.minecraft.world.phys.EntityHitResult eh)
+				|| !(eh.getEntity() instanceof net.minecraft.world.entity.npc.villager.Villager v)) {
+			c.getSource().sendError(Component.literal("Look at the fisherman (the one with the fire in front) first."));
+			return 0;
+		}
+		Factory.cfg.xpFisherman = v.getStringUUID();
+		Factory.cfg.save();
+		c.getSource().sendFeedback(Component.literal("Fisherman for levels set: trading string there throws the emeralds out of the window,"
+				+ " the way you look at it, so put fire (or lava) between you and it. Emeralds for books come from the other fisherman."
+				+ (TradeBook.get().find(v.getStringUUID()) == null ? " Run /kitfactory survey so its trades are known." : "")));
 		return 1;
 	}
 

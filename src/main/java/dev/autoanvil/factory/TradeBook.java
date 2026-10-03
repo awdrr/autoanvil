@@ -225,9 +225,14 @@ public final class TradeBook {
 
 	/** The trade that turns string into emeralds (fisherman), cheapest per emerald. */
 	public Map.Entry<Trader, Offer> stringTrade(java.util.function.Predicate<Trader> around) {
+		return stringTrade(around, null);
+	}
+
+	/** The cheapest string-for-emerald trade, leaving out one fisherman (null: none left out). */
+	public Map.Entry<Trader, Offer> stringTrade(java.util.function.Predicate<Trader> around, String except) {
 		Map.Entry<Trader, Offer> best = null;
 		for (Trader t : traders) {
-			if (!around.test(t)) continue;
+			if (!around.test(t) || t.uuid.equals(except)) continue;
 			for (Offer o : t.offers) {
 				if (!o.enabled || !o.costA.equals("minecraft:string") || !o.costB.isEmpty() || !o.result.equals("minecraft:emerald")) continue;
 				if (best == null || o.price < best.getValue().price) best = Map.entry(t, o);

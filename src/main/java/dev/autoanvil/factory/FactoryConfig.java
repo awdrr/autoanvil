@@ -30,6 +30,11 @@ public final class FactoryConfig {
 	public List<int[]> inputChests = new ArrayList<>();
 	/** Finished items go here, in order. */
 	public List<int[]> outputChests = new ArrayList<>();
+	/**
+	 * The fisherman for levels only ({@code /kitfactory fisherman xp}): its emeralds are thrown out of the trading
+	 * screen, into fire in front of it, so they never fill the inventory. Emeralds come from the other fisherman.
+	 */
+	public String xpFisherman;
 	/** Server command that gives string (without the slash). */
 	public String stringCommand = "string";
 	/**

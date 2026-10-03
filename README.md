@@ -118,6 +118,10 @@ the command into chat instead, which is slower.
 - **Villagers**: a librarian for every enchantment you ticked (it buys the cheapest one it found), a
   **fisherman who buys string**, and **armorers, toolsmiths and weaponsmiths selling the diamond gear**.
   If an item on the buy list has no seller, the factory stops and tells you. It never crafts those items.
+- **A second fisherman for levels** (optional, recommended): put fire on netherrack (or lava) between the
+  walkway and it, look at it and type `/kitfactory fisherman xp`. Trading for levels there takes each emerald
+  onto the cursor and throws it out of the trading window, the way you look, into the fire, so XP trading never
+  fills the inventory. Emeralds for books still come from the other fisherman.
 - **Grindstone at the base** (recommended). Villager gear comes with random enchantments. If every sale of an
   item has one that clashes with yours (Fire Protection vs Protection IV, Bane vs Sharpness), it buys the
   cheapest and grinds it clean first. Sales without a clash are preferred.
@@ -156,6 +160,7 @@ crafts 10 diamond pickaxes from the chest instead of buying them), `set <item|al
 Item names: helmet, chestplate, leggings, boots, sword, pickaxe, axe, spear.
 
 Also: `status`, `reset` (count from 0 again), `dropspot` / `dropspot clear`, `spare chest|drop`,
+`fisherman xp` / `fisherman clear` (look at the fisherman for levels),
 `forget` (drop all recorded trades), `string <command>` (if your server's string command has another name).
 There is also a "Start / stop Kit Factory" key in Controls (unbound by default).
 
@@ -174,6 +179,7 @@ There is also a "Start / stop Kit Factory" key in Controls (unbound by default).
 | `keepEmeralds` | `192` | loose emeralds kept when packing the rest into blocks (more if the next books cost more) |
 | `spareEmeralds` | `"chest"` | `"chest"`: store blocks in the input chests, thrown at the drop spot once full; `"drop"`: always thrown |
 | `dropSpot` | none | set with `/kitfactory dropspot` |
+| `xpFisherman` | none | the fisherman whose emeralds are thrown into the fire; set with `/kitfactory fisherman xp` |
 
 ## Building / testing
 

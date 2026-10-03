@@ -136,7 +136,7 @@ public final class Factory {
 	static final double MAX_STEP_OFF = 2.5;
 	private static final Set<String> toldCrafting = new HashSet<>();
 	private static final Set<String> toldGrinding = new HashSet<>();
-	public static int ground, packed;
+	public static int ground, packed, thrownEmeralds;
 	/** Every decision made, in order (the test reads it). */
 	public static final List<String> decisions = new ArrayList<>();
 	/** Biggest batch combined at the anvil, per item (the test reads it). */
@@ -714,7 +714,16 @@ public final class Factory {
 
 	/** Emeralds and, in the same fisherman visit, levels. */
 	private static void getEmeralds(Minecraft mc, int target, int level, long sig) {
-		stringTrade(mc, target, level, sig);
+		// with a fisherman for levels, this one only makes the emeralds: levels there wouldn't fill the inventory
+		stringTrade(mc, target, xpTrade(mc) != null ? 0 : level, sig);
+	}
+
+	/** The fisherman for levels (its emeralds get thrown into the fire), if one is marked and still there. */
+	static Map.Entry<TradeBook.Trader, TradeBook.Offer> xpTrade(Minecraft mc) {
+		if (cfg.xpFisherman == null) return null;
+		TradeBook.Trader t = TradeBook.get().find(cfg.xpFisherman);
+		if (t == null) return null;
+		return TradeBook.get().stringTrade(x -> x == t && around(mc).test(x));
 	}
 
 	static boolean plainBook(ItemStack s) {
@@ -759,10 +768,16 @@ public final class Factory {
 		stringTrade(mc, 0, targetLevel, sig);
 	}
 
-	/** Get string with the server command if short, then trade it to the fisherman. */
+	/**
+	 * Get string with the server command if short, then trade it to a fisherman: for levels alone, the one marked for
+	 * levels (throwing its emeralds away), else the other one (keeping them).
+	 */
 	private static void stringTrade(Minecraft mc, int targetEmeralds, int targetLevel, long sig) {
 		Inventory inv = mc.player.getInventory();
-		var entry = TradeBook.get().stringTrade(around(mc));
+		var xp = xpTrade(mc);
+		boolean toss = xp != null && targetEmeralds == 0;
+		var entry = toss ? xp : TradeBook.get().stringTrade(around(mc), cfg.xpFisherman);
+		if (entry == null) entry = TradeBook.get().stringTrade(around(mc));
 		if (entry == null) {
 			stop("No fisherman selling emeralds for string was found in the survey.");
 			return;
@@ -776,7 +791,7 @@ public final class Factory {
 			plan("string command", sig, closeScreens(), command(cfg.stringCommand));
 			return;
 		}
-		if (roomFor(inv, Items.EMERALD) < 1 && count(inv, s -> s.is(Items.STRING)) < offer.price) {
+		if (!toss && roomFor(inv, Items.EMERALD) < 1 && count(inv, s -> s.is(Items.STRING)) < offer.price) {
 			// (string is room too: the trade button moves a stack of it into the trade slot)
 			makeRoom(mc, sig, targetEmeralds);
 			return;
@@ -788,11 +803,11 @@ public final class Factory {
 			return;
 		}
 		List<Vec3> route = cfg.route();
-		plan("string trade", sig,
+		plan(toss ? "xp trade" : "string trade", sig,
 				walkTo(spot(mc, route, entry.getKey()), "Walking to " + entry.getKey().label(), eyesOf(UUID.fromString(entry.getKey().uuid))),
 				stepUp(UUID.fromString(entry.getKey().uuid)),
 				openVillager(UUID.fromString(entry.getKey().uuid)),
-				tradeString(offer, targetEmeralds, targetLevel),
+				tradeString(offer, targetEmeralds, targetLevel, toss),
 				closeScreens());
 	}
 
@@ -1755,10 +1770,28 @@ public final class Factory {
 	}
 
 	/** Trade string for emeralds until there are enough emeralds and enough XP (or the string runs out). */
-	static Step tradeString(TradeBook.Offer offer, int targetEmeralds, int targetLevel) {
-		return new Step("Trading string") {
+	/** {@code toss}: levels only, every emerald thrown out of the window (into the fire in front of that fisherman). */
+	static Step tradeString(TradeBook.Offer offer, int targetEmeralds, int targetLevel, boolean toss) {
+		return new Step(toss ? "Trading string for levels" : "Trading string") {
 			long pendingSince, lastSig = -1;
 			int stringAtAsk, still, waitedForString;
+
+			/**
+			 * Take the trades the string in the slot pays for onto the cursor, one click each, and throw them out of the
+			 * window: they fly the way we look, into the fire in front of this fisherman.
+			 */
+			void tossResults(Minecraft mc, MerchantScreen ms) {
+				MerchantMenu menu = ms.getMenu();
+				ItemStack paid = menu.getSlot(0).getItem();
+				int trades = Math.max(1, (paid.is(Items.STRING) ? paid.getCount() : 0) / Math.max(1, offer.price));
+				for (int i = 0; i < trades && menu.getSlot(2).getItem().is(Items.EMERALD) && menu.getCarried().getCount() < 64; i++) {
+					Input.clickSlot(mc, 2, 0, false);
+				}
+				if (menu.getCarried().is(Items.EMERALD)) {
+					thrownEmeralds += menu.getCarried().getCount();
+					Input.click(ms, 1, 1, 0, false);
+				}
+			}
 
 			Status run(Minecraft mc) {
 				if (!(mc.screen instanceof MerchantScreen ms)) return fail("The trading screen closed");
@@ -1766,8 +1799,15 @@ public final class Factory {
 				Inventory inv = mc.player.getInventory();
 				int emeralds = count(inv, s -> s.is(Items.EMERALD));
 				int level = mc.player.experienceLevel;
-				status = "Trading string: " + emeralds + (targetEmeralds > 0 ? "/" + targetEmeralds : "") + " emeralds, level "
-						+ level + (targetLevel > 0 ? "/" + targetLevel : "");
+				status = toss ? "Trading string for levels (emeralds into the fire): level " + level + "/" + targetLevel
+						: "Trading string: " + emeralds + (targetEmeralds > 0 ? "/" + targetEmeralds : "") + " emeralds, level "
+								+ level + (targetLevel > 0 ? "/" + targetLevel : "");
+				if (toss && menu.getCarried().is(Items.EMERALD)) { // still holding some: out of the window with them
+					thrownEmeralds += menu.getCarried().getCount();
+					Input.click(ms, 1, 1, 0, false);
+					wait = gap(mc);
+					return Status.RUNNING;
+				}
 				boolean met = emeralds >= targetEmeralds && level >= targetLevel;
 				int inInv = count(inv, s -> s.is(Items.STRING));
 				int string = inInv + (menu.getSlot(0).getItem().is(Items.STRING) ? menu.getSlot(0).getItem().getCount() : 0);
@@ -1800,6 +1840,11 @@ public final class Factory {
 					still = 0;
 				} else if (++still > 100) {
 					return fail("String trading isn't getting anywhere (" + string + " string, " + emeralds + " emeralds)");
+				}
+				if (menu.getSlot(2).getItem().is(Items.EMERALD) && toss) {
+					tossResults(mc, ms);
+					wait = gap(mc);
+					return Status.RUNNING;
 				}
 				if (menu.getSlot(2).getItem().is(Items.EMERALD)) {
 					if (roomFor(inv, Items.EMERALD) < 1) {
@@ -1836,7 +1881,8 @@ public final class Factory {
 					if (sel == -1) return fail("The fisherman doesn't buy string any more - run /kitfactory survey");
 					if (sel == -2) return Status.RUNNING; // scrolled the list; click next tick
 				}
-				if (menu.getSlot(2).getItem().is(Items.EMERALD) && roomFor(inv, Items.EMERALD) > 0) Input.clickSlot(mc, 2, 0, true);
+				if (toss) tossResults(mc, ms);
+				else if (menu.getSlot(2).getItem().is(Items.EMERALD) && roomFor(inv, Items.EMERALD) > 0) Input.clickSlot(mc, 2, 0, true);
 				wait = gap(mc);
 				return Status.RUNNING;
 			}
