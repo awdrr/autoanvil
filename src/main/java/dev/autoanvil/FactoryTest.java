@@ -405,6 +405,12 @@ final class FactoryTest {
 							"both helmets enchanted together although the inventory started full of emeralds (" + Factory.batchSizes + ")");
 					check(strafeTicks > 20, "walked to villagers strafing with A/D while looking at them (" + strafeTicks + " ticks)");
 					check(Factory.ground >= 1, "the Bane of Arthropods sword was ground clean before enchanting (" + Factory.ground + ")");
+					int g = Factory.decisions.indexOf("grind minecraft:diamond_sword");
+					String after = g >= 0 && g + 1 < Factory.decisions.size() ? Factory.decisions.get(g + 1) : "-";
+					boolean bookBefore = false;
+					for (int i = 0; i < g; i++) bookBefore |= Factory.decisions.get(i).contains("minecraft:sharpness") && i > Factory.decisions.indexOf("buy minecraft:diamond_sword");
+					check(bookBefore && after.equals("anvil minecraft:diamond_sword"),
+							"sword: books bought first, then ground at the base right before the anvil, one trip (" + after + ")");
 					int spears = 0;
 					for (ItemStack s : out) if (s.is(Items.DIAMOND_SPEAR) && lvl(mc, s, Enchantments.SHARPNESS) == 5 && lvl(mc, s, Enchantments.UNBREAKING) == 3
 							&& lvl(mc, s, Enchantments.MENDING) == 1) spears++;
