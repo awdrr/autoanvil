@@ -86,7 +86,7 @@ final class FactoryTest {
 		int renderDistance, strafeTicks, blocksBefore;
 		String xpFisher;
 		int chatPhase, chatAt, chatWalkTicks, chatMoveTicks, decisionsAtChat;
-		boolean pauseSeen, typedLeftAlone;
+		boolean pauseSeen, typedLeftAlone, junked;
 		int decisionsBefore;
 		int screenMoves, screenTurns, screenWalkKey;
 		Vec3 lastPos;
@@ -532,8 +532,27 @@ final class FactoryTest {
 				}
 				case 11 -> {
 					if (in() % 200 == 0) AutoAnvil.LOGGER.info("[factorytest] {}s: {} | {}", in() / 20, Factory.status, Factory.progress());
+					// part way through buying the books, every free slot fills up with things it can't put away
+					if (!junked && Factory.running() && Factory.status.startsWith("Walking to Librarian")) {
+						junked = true;
+						server(mc, () -> {
+							ServerPlayer sp = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+							int leave = 3;
+							for (int i = 35; i >= 0; i--) {
+								if (!sp.getInventory().getItem(i).isEmpty()) continue;
+								if (leave > 0) leave--;
+								else sp.getInventory().setItem(i, new ItemStack(Items.COBBLESTONE, 64));
+							}
+							sp.inventoryMenu.broadcastChanges();
+							sp.setExperienceLevels(30); // levels on hand, like a player who's been splashing
+							return null;
+						});
+					}
 					if (Factory.running() && in() < 20 * 60 * 6) return;
-					check(Factory.lastMessage.startsWith("All done"), "pickaxe set to Craft: factory finishes (" + Factory.lastMessage + ")");
+					AutoAnvil.LOGGER.info("[factorytest] full inventory mid-shopping: combined first {} times", Factory.deferred);
+					check(junked && Factory.lastMessage.startsWith("All done") && Factory.deferred > 0,
+							"pickaxe set to Craft, inventory filled up part way through buying: combined what it had, bought the rest, finished ("
+									+ Factory.lastMessage + ")");
 					int pickaxes = server(mc, () -> {
 						int n = 0;
 						Container c = (Container) mc.getSingleplayerServer().overworld().getBlockEntity(output);
@@ -549,6 +568,15 @@ final class FactoryTest {
 					});
 					check(pickaxes == 2, "output chest: 2 crafted diamond pickaxes with Unbreaking III, Mending, Silk Touch and no Fortune (" + pickaxes + ")");
 					check(diamonds(mc) == 57, "the pickaxes took 6 diamonds from the chest (" + (64 - diamonds(mc)) + " used in all)");
+					int dropped = server(mc, () -> {
+						int k = 0;
+						for (var e : mc.getSingleplayerServer().overworld().getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+								new net.minecraft.world.phys.AABB(0, y - 2, -4, 63, y + 4, 8))) {
+							if (e.getItem().is(Items.BOOK) || e.getItem().is(Items.EMERALD)) k += e.getItem().getCount();
+						}
+						return k;
+					});
+					check(dropped == 0, "no plain books or emeralds dropped on the walkway when the inventory was full (" + dropped + ")");
 					check(onPlayer(mc, Items.DIAMOND) == 0 && onPlayer(mc, Items.STICK) == 0, "leftover pickaxe materials went back in the input chest");
 					check(Factory.batchSizes.getOrDefault("minecraft:diamond_pickaxe", 0) == 2, "both pickaxes crafted and enchanted together (" + Factory.batchSizes + ")");
 					int thrown = server(mc, () -> {

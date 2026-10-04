@@ -152,7 +152,8 @@ public final class Factory {
 	static final double MAX_STEP_OFF = 2.5;
 	private static final Set<String> toldCrafting = new HashSet<>();
 	private static final Set<String> toldGrinding = new HashSet<>();
-	public static int ground, packed, thrownEmeralds;
+	public static int ground, packed, thrownEmeralds, deferred;
+	private static final Set<String> deferredSay = new HashSet<>();
 	/** Every decision made, in order (the test reads it). */
 	public static final List<String> decisions = new ArrayList<>();
 	/** Biggest batch combined at the anvil, per item (the test reads it). */
@@ -199,6 +200,7 @@ public final class Factory {
 		surveying = null;
 		inputsFull = false;
 		toldBatch.clear();
+		deferredSay.clear();
 		clearCache.clear();
 		toldCrafting.clear();
 		toldGrinding.clear();
@@ -625,7 +627,18 @@ public final class Factory {
 				return;
 			}
 		}
-		if (!missing.isEmpty()) {
+		boolean anyBook = false;
+		for (var en : kit.entrySet()) anyBook |= count(inv, x -> Kit.bookHas(x, en.getKey(), en.getValue())) > 0;
+		if (!missing.isEmpty() && free(inv) < 3 && !canMakeRoom(mc, inv, (int) booksCost(mc, kit, missing))) {
+			// no slot for the next book and nothing left to clear: combine what's bought so far (that frees the books'
+			// slots), then come back for the rest
+			if (!anyBook) {
+				stop("Inventory full, no room for books: " + String.join(", ", inventoryList(inv)) + ". Empty some slots.");
+				return;
+			}
+			if (deferredSay.add(typeId)) say("Inventory full: combining the books bought so far first, then buying the rest.");
+			deferred++;
+		} else if (!missing.isEmpty()) {
 			if (fetchPlainBooks(mc, kit, items, sig)) return;
 			long emeraldsNeeded = booksCost(mc, kit, missing);
 			TradeBook.Trader trader = nearestLibrarian(mc, route, kit, missing);
@@ -648,15 +661,26 @@ public final class Factory {
 				makeRoom(mc, sig, (int) emeraldsNeeded);
 				return;
 			}
-			if (free(inv) <= 0 || !planBooksAt(mc, sig, route, trader, kit, missing, 0)) makeRoom(mc, sig, (int) emeraldsNeeded);
+			if (planBooksAt(mc, sig, route, trader, kit, missing, 0)) return;
+			makeRoom(mc, sig, (int) emeraldsNeeded);
 			return;
 		}
 
 		// 7. levels for the anvil (usually already there from the fisherman visit for the books): up to cfg.xpLevel,
 		// or what the batch needs if less, never below the dearest step; the anvil comes back here if it runs out
 		if (xpTarget > 0 && p.experienceLevel < xpTarget) {
-			getXp(mc, xpTarget, sig);
-			return;
+			var st = TradeBook.get().stringTrade(around(mc));
+			boolean noRoomForString = cfg.stringInGui && free(inv) < 3 && !canMakeRoom(mc, inv, 0)
+					&& (st == null || count(inv, x -> x.is(Items.STRING)) < st.getValue().price);
+			if (!noRoomForString) {
+				getXp(mc, xpTarget, sig);
+				return;
+			}
+			// no room for the string to trade for more: spend the levels there are at the anvil first, combining books frees slots
+			if (p.experienceLevel == 0) {
+				stop("Inventory full and no levels to combine with: " + String.join(", ", inventoryList(inv)) + ". Empty some slots.");
+				return;
+			}
 		}
 
 		// 8. at the base: clashing gear through the grindstone, then straight on to the anvil
@@ -682,7 +706,8 @@ public final class Factory {
 		AutoAnvil.LOGGER.info("[Kit Factory] decide: {}", what);
 		if (what.equals(lastDecision) && sig == lastSignature) {
 			if (++sameDecision >= 5) {
-				stop("Stuck: '" + what + "' keeps not getting anywhere. " + (lastMessage == null ? "" : lastMessage));
+				stop("Stuck: '" + what + "' keeps not getting anywhere" + (what.contains("emeralds") || what.contains("blocks") ? " - the input chests may be full" : "")
+						+ ". Inventory: " + String.join(", ", inventoryList(mc().player.getInventory())) + ".");
 				return;
 			}
 		} else {
@@ -1567,7 +1592,7 @@ public final class Factory {
 			int books = 0;
 			for (var en : kit.entrySet()) books += Math.max(n, count(inv, x -> Kit.bookHas(x, en.getKey(), en.getValue())));
 			int spare = (int) Math.ceil(Math.max(0, loose - unit * n) / 64.0);
-			if (n + books + other + spare + 2 <= 36) fit = n;
+			if (n + books + other + spare + 4 <= 36) fit = n;
 		}
 		return fit;
 	}
@@ -1595,7 +1620,27 @@ public final class Factory {
 		int loose = count(inv, s -> s.is(Items.EMERALD));
 		if (loose - keep >= 128 && cfg.craftingTable != null) return true;
 		if (count(inv, s -> s.is(Items.EMERALD_BLOCK)) > 0 && (canStoreBlocks() || cfg.dropSpot != null)) return true;
-		return loose - keepEmeralds >= 64 && !cfg.inputChests.isEmpty() && !inputsFull;
+		return canBankEmeralds(inv, keepEmeralds);
+	}
+
+	/** Whether storing loose emeralds (keeping max(keep, 64)) would move a stack: the rule bankEmeralds goes by. */
+	static boolean canBankEmeralds(Inventory inv, int keepEmeralds) {
+		if (cfg.inputChests.isEmpty() || inputsFull) return false;
+		int have = count(inv, x -> x.is(Items.EMERALD)), keep = Math.max(keepEmeralds, 64);
+		for (int i = 0; i < 36; i++) if (inv.getItem(i).is(Items.EMERALD) && have - inv.getItem(i).getCount() >= keep) return true;
+		return false;
+	}
+
+	/** What the inventory holds, for messages: "5 Enchanted Book", "50 Golden Carrot", ... */
+	static List<String> inventoryList(Inventory inv) {
+		Map<String, Integer> n = new LinkedHashMap<>();
+		for (int i = 0; i < 36; i++) {
+			ItemStack s = inv.getItem(i);
+			if (!s.isEmpty()) n.merge(s.getHoverName().getString(), s.getCount(), Integer::sum);
+		}
+		List<String> out = new ArrayList<>();
+		for (var en : n.entrySet()) out.add(en.getValue() + " " + en.getKey());
+		return out;
 	}
 
 	static boolean canStoreBlocks() {
@@ -1655,7 +1700,7 @@ public final class Factory {
 					+ " (into lava, off an edge...) and type /kitfactory dropspot.");
 			return;
 		}
-		if (emeralds - keepEmeralds >= 64 && !cfg.inputChests.isEmpty() && !inputsFull) {
+		if (canBankEmeralds(inv, keepEmeralds)) {
 			List<Step> s = new ArrayList<>();
 			s.add(walkTo(cfg.baseVec(), "Walking to the base"));
 			for (int[] c : cfg.inputChests) {
@@ -1663,10 +1708,19 @@ public final class Factory {
 				s.add(bankEmeralds(Math.max(keepEmeralds, 64)));
 				s.add(closeScreens());
 			}
+			s.add(new Step("Checking the chests") {
+				Status run(Minecraft m) {
+					if (count(inv, x -> x.is(Items.EMERALD)) >= emeralds) {
+						inputsFull = true;
+						say("The input chests are full: no room for spare emeralds.");
+					}
+					return Status.DONE;
+				}
+			});
 			plan("bank spare emeralds", sig, s.toArray(new Step[0]));
 			return;
 		}
-		stop("Inventory full - make some room (the factory needs free slots for books and items).");
+		stop("Inventory full: " + String.join(", ", inventoryList(inv)) + ". Make some room (the factory needs free slots for books and items).");
 	}
 
 	/** Record the open villager's trades. */
@@ -1749,6 +1803,13 @@ public final class Factory {
 					return Status.DONE;
 				}
 				ItemStack result = menu.getSlot(2).getItem();
+				if (!roomToBuyOne(menu, inv)) {
+					// the emeralds and plain books in the trade slots go back to the inventory when the screen closes: no
+					// room for them and they'd be dropped on the ground, so stop here
+					bought += got;
+					failures = 0;
+					return Status.DONE;
+				}
 				if (phase == 1 && !result.isEmpty() && isIt.test(result)) {
 					Input.clickSlot(mc, 2, 0, false); // take one
 					wait = gap(mc);
@@ -1759,7 +1820,7 @@ public final class Factory {
 				if (sel == -1) return fail(trader.label() + " doesn't offer " + offer.what() + " any more - run /kitfactory survey");
 				phase = sel >= 0 ? 1 : 0;
 				sinceSelect = 0;
-				if (phase == 1 && !menu.getSlot(2).getItem().isEmpty() && isIt.test(menu.getSlot(2).getItem())) {
+				if (phase == 1 && !menu.getSlot(2).getItem().isEmpty() && isIt.test(menu.getSlot(2).getItem()) && roomToBuyOne(menu, inv)) {
 					Input.clickSlot(mc, 2, 0, false); // the result shows at once: take it this tick
 				}
 				wait = gap(mc);
@@ -1767,6 +1828,19 @@ public final class Factory {
 				return Status.RUNNING;
 			}
 		};
+	}
+
+	/**
+	 * Room for one more bought item, and still for what's left in the trade slots (emeralds, plain books) to go back
+	 * to the inventory when the screen closes, instead of being dropped.
+	 */
+	static boolean roomToBuyOne(MerchantMenu menu, Inventory inv) {
+		int back = 0;
+		for (int i = 0; i < 2; i++) {
+			ItemStack s = menu.getSlot(i).getItem();
+			if (!s.isEmpty() && roomFor(inv, s.getItem()) - free(inv) * s.getMaxStackSize() < s.getCount()) back++;
+		}
+		return free(inv) - 1 >= back;
 	}
 
 	/** Trade string for emeralds until there are enough emeralds and enough XP (or the string runs out). */
@@ -2002,6 +2076,10 @@ public final class Factory {
 
 	// ---------------------------------------------------------------- helpers
 
+	static Minecraft mc() {
+		return Minecraft.getInstance();
+	}
+
 	static boolean isAnvilItem(ItemStack s) {
 		return s.is(Items.ANVIL) || s.is(Items.CHIPPED_ANVIL) || s.is(Items.DAMAGED_ANVIL);
 	}
@@ -2216,7 +2294,7 @@ public final class Factory {
 	static Double standAt(Minecraft mc, double x, double y, double z) {
 		for (int k = 0; k <= 18; k++) {
 			double fy = y + (k % 2 == 1 ? 1 : -1) * ((k + 1) / 2) * 0.0625;
-			AABB body = new AABB(x - 0.35, fy + 0.01, z - 0.35, x + 0.35, fy + 1.8, z + 0.35);
+			AABB body = new AABB(x - 0.299, fy + 0.01, z - 0.299, x + 0.299, fy + 1.8, z + 0.299);
 			AABB under = new AABB(x - 0.25, fy - 0.2, z - 0.25, x + 0.25, fy + 0.005, z + 0.25);
 			if (mc.level.noCollision(mc.player, body) && !mc.level.noCollision(mc.player, under)) return fy;
 		}
