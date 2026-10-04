@@ -4,7 +4,8 @@
 	"package": "dev.autoanvil.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"client": [
-		"AbstractContainerScreenMixin"
+		"AbstractContainerScreenMixin",
+		"MinecraftMixin"
 	],
 	"injectors": { "defaultRequire": 1 }
 }

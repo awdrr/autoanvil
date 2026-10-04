@@ -97,6 +97,22 @@ public final class Factory {
 			return Status.FAILED;
 		}
 
+		/**
+		 * Get a screen out of the way before pressing keys in the world (use, inventory, hotbar). An empty chat (opened
+		 * to tab out with) or any other screen is closed; chat with something typed in it is left for you to send or
+		 * close. True while that's going on.
+		 */
+		boolean screenInTheWay(Minecraft mc) {
+			if (mc.screen == null) return false;
+			if (mc.screen instanceof ChatScreen cs && cs.input != null && !cs.input.getValue().isEmpty()) {
+				status = "Waiting for you to send or close the chat";
+				return true;
+			}
+			Input.escape(mc);
+			wait = 2;
+			return true;
+		}
+
 		/** What's on the cursor back into the inventory: onto a stack of the same with room, else an empty slot. */
 		Status putDown(Minecraft mc, AbstractContainerMenu menu, Inventory inv) {
 			ItemStack c = menu.getCarried();
@@ -824,7 +840,7 @@ public final class Factory {
 	static Step closeScreens() {
 		return new Step("Closing") {
 			Status run(Minecraft mc) {
-				if (mc.screen == null) return Status.DONE;
+				if (mc.screen == null || mc.screen instanceof ChatScreen) return Status.DONE; // (the chat is yours)
 				if (t > 40) return fail("A screen would not close");
 				Input.escape(mc);
 				wait = 2;
@@ -863,7 +879,7 @@ public final class Factory {
 			boolean alongOnly;
 
 			Status run(Minecraft mc) {
-				if (mc.screen != null) {
+				if (!Input.free(mc)) {
 					Input.forward(mc, false);
 					Input.escape(mc);
 					wait = 2;
@@ -943,11 +959,7 @@ public final class Factory {
 				if (mc.screen instanceof MerchantScreen ms) {
 					return ms.getMenu().getOffers().isEmpty() ? Status.RUNNING : Status.DONE;
 				}
-				if (mc.screen != null) {
-					Input.escape(mc);
-					wait = 2;
-					return Status.RUNNING;
-				}
+				if (screenInTheWay(mc)) return Status.RUNNING;
 				Entity e = entity(mc, uuid);
 				if (e == null) return fail("That villager isn't loaded (or has moved)");
 				if (pressedAt >= 0) {
@@ -989,11 +1001,7 @@ public final class Factory {
 					if (opened < 0) opened = t;
 					return t - opened >= 2 + latencyTicks(mc) ? Status.DONE : Status.RUNNING; // contents arrive just after
 				}
-				if (mc.screen != null) {
-					Input.escape(mc);
-					wait = 2;
-					return Status.RUNNING;
-				}
+				if (screenInTheWay(mc)) return Status.RUNNING;
 				if (pos == null) return fail("No " + what + " marked");
 				if (pressedAt >= 0) {
 					if (t - pressedAt < 30) return Status.RUNNING;
@@ -1059,11 +1067,7 @@ public final class Factory {
 				long now = System.currentTimeMillis();
 				switch (phase) {
 					case 0 -> {
-						if (mc.screen != null) {
-							Input.escape(mc);
-							wait = 2;
-							return Status.RUNNING;
-						}
+						if (screenInTheWay(mc)) return Status.RUNNING;
 						if (now < commandCooldownUntil || now - lastCommandMs < cfg.stringIntervalMs) {
 							status = now < commandCooldownUntil ? "Waiting " + (commandCooldownUntil - now) / 1000 + "s before /" + cmd + " again" : label;
 							return Status.RUNNING;
@@ -1424,11 +1428,7 @@ public final class Factory {
 						failures = 0;
 						return Status.DONE;
 					}
-					if (mc.screen != null) {
-						Input.escape(mc);
-						wait = 2;
-						return Status.RUNNING;
-					}
+					if (screenInTheWay(mc)) return Status.RUNNING;
 					float err = Input.turnToward(mc, yaw, pitch, 30f);
 					if (err > 1.5f) {
 						aligned = 0;
@@ -1950,8 +1950,8 @@ public final class Factory {
 				if (hot < 0 || onCursor) {
 					// open the inventory and swap it into the last hotbar slot: pick up, click the hotbar slot, put the other item back
 					if (!(mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is)) {
-						if (mc.screen != null) Input.escape(mc);
-						else KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyInventory));
+						if (screenInTheWay(mc)) return Status.RUNNING;
+						KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyInventory));
 						wait = 3;
 						return Status.RUNNING;
 					}
@@ -1969,8 +1969,7 @@ public final class Factory {
 						wait = gap(mc);
 						return Status.RUNNING;
 					}
-					Input.escape(mc);
-					wait = 2;
+					screenInTheWay(mc);
 					return Status.RUNNING;
 				}
 				if (inv.getSelectedSlot() != hot) {

@@ -88,6 +88,14 @@ public final class Input {
 		KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyHotbarSlots[slot]));
 	}
 
+	/**
+	 * Nothing open but maybe the chat: the chat is only on the player's own screen (the server never knows it's
+	 * open), and it's how you tab out, so walking and turning carry on under it. Never in any other screen.
+	 */
+	public static boolean free(Minecraft mc) {
+		return mc.screen == null || mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen;
+	}
+
 	/** Holds or releases the forward key. Refused while a screen is open: no walking in menus. */
 	public static void forward(Minecraft mc, boolean down) {
 		move(mc, down ? 0 : null);
@@ -98,7 +106,7 @@ public final class Input {
 	 * 180 S, -135 S+A, -90 A, -45 W+A), or release them all (null). Refused while a screen is open.
 	 */
 	public static void move(Minecraft mc, Integer rel) {
-		boolean on = rel != null && mc.screen == null;
+		boolean on = rel != null && free(mc);
 		int r = on ? Math.floorMod(rel, 360) : -1;
 		mc.options.keyUp.setDown(r == 0 || r == 45 || r == 315);
 		mc.options.keyRight.setDown(r == 45 || r == 90 || r == 135);
@@ -133,7 +141,7 @@ public final class Input {
 		LocalPlayer p = mc.player;
 		float dy = Mth.wrapDegrees(yaw - p.getYRot()), dp = pitch - p.getXRot();
 		float err = Math.max(Math.abs(dy), Math.abs(dp));
-		if (mc.screen != null || err < 0.05f) return err;
+		if (!free(mc) || err < 0.05f) return err;
 		float step = Math.min(maxStep, Math.max(1.5f, err * 0.5f));
 		float k = Math.min(1f, step / err);
 		p.turn(dy * k / 0.15, dp * k / 0.15);

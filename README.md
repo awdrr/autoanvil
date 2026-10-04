@@ -90,7 +90,10 @@ everything on the anvil with Auto Anvil and stores the finished items in your ou
 item by default. `/kitfactory items` changes the amount per item and whether each one is bought or crafted.
 
 It only presses keys and clicks like a player would: walking, turning, right-clicking villagers and blocks,
-and clicking slots. It never walks or turns while a screen is open. Walking to a villager, it keeps looking at
+and clicking slots. It never walks or turns while a screen is open, except the chat (only your own screen
+shows it): walking carries on under the chat, an empty chat is closed when it needs to click something, and
+chat with something typed in it is left for you to send or close. **Tabbing out** while it runs doesn't open
+the pause menu, so it keeps going (Esc in the game still stops it). Walking to a villager, it keeps looking at
 it and strafes (A/D, or W/S plus A/D) instead of turning away to walk. Where the floor between two walkway
 points is clear it cuts straight across, so a walkway that loops round the hall isn't walked all the way round.
 

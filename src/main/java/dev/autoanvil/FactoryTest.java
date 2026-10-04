@@ -85,6 +85,8 @@ final class FactoryTest {
 		boolean brokeAnvil;
 		int renderDistance, strafeTicks, blocksBefore;
 		String xpFisher;
+		int chatPhase, chatAt, chatWalkTicks, chatMoveTicks, decisionsAtChat;
+		boolean pauseSeen, typedLeftAlone;
 		int decisionsBefore;
 		int screenMoves, screenTurns, screenWalkKey;
 		Vec3 lastPos;
@@ -135,7 +137,11 @@ final class FactoryTest {
 		/** Never walk, turn or move with a screen open. */
 		void watch(Minecraft mc) {
 			if (mc.player == null) return;
-			boolean screen = mc.screen != null;
+			boolean screen = !dev.autoanvil.factory.Input.free(mc); // the chat doesn't count: walking goes on under it
+			if (mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen
+					&& (mc.options.keyUp.isDown() || mc.options.keyLeft.isDown() || mc.options.keyRight.isDown() || mc.options.keyDown.isDown())) chatWalkTicks++;
+			if (mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen) pauseSeen = true;
+			if (mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen && lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) chatMoveTicks++;
 			if (screen && lastScreen) {
 				if (lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) screenMoves++;
 				if (Math.abs(mc.player.getYRot() - lastYaw) > 0.01 || Math.abs(mc.player.getXRot() - lastPitch) > 0.01) screenTurns++;
@@ -384,6 +390,7 @@ final class FactoryTest {
 					next();
 				}
 				case 6 -> {
+					chatAndTabOut(mc);
 					// break the anvil once while it is combining
 					if (!brokeAnvil && AutoAnvil.running() && AutoAnvil.runner.stepsDone >= 1) {
 						brokeAnvil = true;
@@ -586,6 +593,50 @@ final class FactoryTest {
 				p.inventoryMenu.broadcastChanges();
 				return null;
 			});
+		}
+
+		/**
+		 * Part way through the run: chat open with something typed (left alone), then an empty chat and the window out
+		 * of focus with pause-on-focus-loss on, for 20 seconds: no pause menu, and the factory keeps going.
+		 */
+		void chatAndTabOut(Minecraft mc) {
+			switch (chatPhase) {
+				case 0 -> {
+					if (in() > 20 * 20 && mc.screen == null && Factory.running() && Factory.status.startsWith("Walking")) {
+						mc.setScreen(new net.minecraft.client.gui.screens.ChatScreen("hello", false));
+						chatAt = in();
+						chatPhase = 1;
+					}
+				}
+				case 1 -> {
+					if (in() - chatAt < 60) return;
+					typedLeftAlone = mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen cs && cs.input.getValue().equals("hello");
+					mc.setScreen(null);
+					chatPhase = 2;
+				}
+				case 2 -> {
+					if (mc.screen != null || !Factory.status.startsWith("Walking")) return;
+					mc.setScreen(new net.minecraft.client.gui.screens.ChatScreen("", false));
+					mc.options.pauseOnLostFocus = true;
+					pauseSeen = false;
+					decisionsAtChat = Factory.decisions.size();
+					chatAt = in();
+					chatPhase = 3;
+				}
+				case 3 -> {
+					mc.setWindowActive(false);
+					if (in() - chatAt < 20 * 20) return;
+					mc.setWindowActive(true);
+					mc.options.pauseOnLostFocus = false;
+					check(typedLeftAlone, "chat with something typed in it was left open for you");
+					check(!pauseSeen && Factory.decisions.size() > decisionsAtChat,
+							"chat open, then the window out of focus for 20 s: no pause menu, kept going (" + (Factory.decisions.size() - decisionsAtChat) + " decisions)");
+					check(chatWalkTicks > 0 && chatMoveTicks > 0, "walked on with the chat open (" + chatWalkTicks + " ticks of keys, moved in " + chatMoveTicks + ")");
+					chatPhase = 4;
+				}
+				default -> {
+				}
+			}
 		}
 
 		int onPlayer(Minecraft mc, Item item) {
