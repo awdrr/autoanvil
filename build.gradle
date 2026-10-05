@@ -1,17 +1,158 @@
+// Multi-version build. Pick the Minecraft version with -Pmc=<version>, e.g.
+//   ./gradlew build -Pmc=26.2
+// Version-specific code lives in the shared sources behind //#if MC >= 1.21.5 ... //#else ... //#endif
+// directives (lines of inactive branches are commented out with //$$ ); see preprocessSources below.
+
 plugins {
-	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}" apply false
+	id 'net.fabricmc.fabric-loom' version "${loom_version}" apply false
 }
 
-version = "${project.mod_version}+${project.minecraft_version}"
+// [Minecraft version : Fabric API version, Java release, whether the game needs remapping (pre-26.x)]
+def SUPPORTED = [
+	"1.21.11": [api: "0.141.6+1.21.11", java: 21, remap: true,  dependency: "~1.21.11"],
+	"26.2"   : [api: "0.160.0+26.2",    java: 25, remap: false, dependency: "~26.2"],
+]
+def mcVersion = (project.findProperty("mc") ?: project.default_minecraft_version).toString()
+def target = SUPPORTED[mcVersion]
+if (target == null) throw new GradleException("Unsupported Minecraft version '${mcVersion}'. Supported: ${SUPPORTED.keySet()}")
+
+apply plugin: (target.remap ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabric-loom')
+
+version = "${project.mod_version}+${mcVersion}"
 group = project.group
 base { archivesName = project.archives_base_name }
 
+ext.mcVersion = mcVersion
+ext.mcTarget = target
+
+// ---------------------------------------------------------------- preprocessor
+
+// 1.21.4 -> 1210400, 26.1.1 -> 26010100: monotonic across the naming change in 2026.
+def mcCode = { String v ->
+	def p = v.tokenize('.').collect { it as int }
+	while (p.size() < 3) p << 0
+	return p[0] * 1000000 + p[1] * 10000 + p[2] * 100
+}
+def currentCode = mcCode(mcVersion)
+
+def evalTerm = { String term ->
+	def m = (term.trim() =~ /^MC\s*(>=|<=|==|!=|<|>)\s*([0-9.]+)$/)
+	if (!m.matches()) throw new GradleException("Bad preprocessor term: '${term}'")
+	int other = mcCode(m.group(2))
+	switch (m.group(1)) {
+		case ">=": return currentCode >= other
+		case "<=": return currentCode <= other
+		case "==": return currentCode == other
+		case "!=": return currentCode != other
+		case "<": return currentCode < other
+		default: return currentCode > other
+	}
+}
+def evalCondition = { String expr ->
+	// terms joined by && and ||, no parentheses
+	return expr.split(/\|\|/).any { or -> or.split(/&&/).every { and -> evalTerm(and) } }
+}
+
+def preprocess = { String text ->
+	def out = new StringBuilder()
+	def stack = []   // frames: [active, taken, parentActive]
+	text.replace("\r\n", "\n").split("\n", -1).each { String line ->
+		def t = line.trim()
+		if (t.startsWith("//#if ")) {
+			boolean parent = stack.isEmpty() || stack.last()[0]
+			boolean active = parent && evalCondition(t.substring(6))
+			stack << [active, active, parent]
+			out.append(line).append("\n")
+		} else if (t.startsWith("//#elseif ")) {
+			def f = stack.last()
+			boolean active = f[2] && !f[1] && evalCondition(t.substring(10))
+			f[0] = active; f[1] = f[1] || active
+			out.append(line).append("\n")
+		} else if (t == "//#else") {
+			def f = stack.last()
+			boolean active = f[2] && !f[1]
+			f[0] = active; f[1] = true
+			out.append(line).append("\n")
+		} else if (t == "//#endif") {
+			stack.removeLast()
+			out.append(line).append("\n")
+		} else {
+			boolean active = stack.isEmpty() || stack.last()[0]
+			def m = (line =~ /^(\s*)(.*)$/)
+			m.matches()
+			String indent = m.group(1), body = m.group(2)
+			if (active) {
+				out.append(body.startsWith("//\$\$ ") ? indent + body.substring(5) : (body == "//\$\$" ? indent : line))
+			} else {
+				out.append(body.isEmpty() || body.startsWith("//\$\$") ? line : indent + "//\$\$ " + body)
+			}
+			out.append("\n")
+		}
+	}
+	if (out.length() > 0) out.setLength(out.length() - 1)
+	return out.toString()
+}
+
+def preprocessedDir = layout.buildDirectory.dir("preprocessed/${mcVersion}/java")
+tasks.register("preprocessSources") {
+	description = "Applies //#if MC ... directives for the selected Minecraft version"
+	inputs.dir("src/main/java")
+	inputs.property("mc", mcVersion)
+	outputs.dir(preprocessedDir)
+	doLast {
+		def root = preprocessedDir.get().asFile
+		project.delete(root)
+		fileTree("src/main/java").visit { d ->
+			if (d.file.isDirectory()) return
+			def out = new File(root, d.relativePath.pathString)
+			out.parentFile.mkdirs()
+			out.text = preprocess(d.file.text)
+		}
+	}
+}
+
+def preprocessedTestDir = layout.buildDirectory.dir("preprocessed/${mcVersion}/test")
+tasks.register("preprocessTestSources") {
+	description = "Applies //#if MC ... directives to the tests"
+	inputs.dir("src/test/java")
+	inputs.property("mc", mcVersion)
+	outputs.dir(preprocessedTestDir)
+	doLast {
+		def root = preprocessedTestDir.get().asFile
+		project.delete(root)
+		fileTree("src/test/java").visit { d ->
+			if (d.file.isDirectory()) return
+			def out = new File(root, d.relativePath.pathString)
+			out.parentFile.mkdirs()
+			out.text = preprocess(d.file.text)
+		}
+	}
+}
+
+sourceSets.main.java.setSrcDirs([preprocessedDir])
+sourceSets.test.java.setSrcDirs([preprocessedTestDir])
+tasks.named("compileJava") { dependsOn "preprocessSources" }
+tasks.named("compileTestJava") { dependsOn "preprocessTestSources" }
+
+// ---------------------------------------------------------------- access widener
+
+// The access widener's namespace: "named" (Mojang names, remapped) before 26.x, "official" since the game ships
+// unobfuscated. One source file, the header written for the version being built.
+def awFile = layout.buildDirectory.file("generated/aw/${mcVersion}/autoanvil.accesswidener").get().asFile
+awFile.parentFile.mkdirs()
+awFile.text = file("src/main/aw/autoanvil.accesswidener").text.replaceFirst(/^accessWidener v2 \w+/, "accessWidener v2 ${target.remap ? 'named' : 'official'}")
+
+// ---------------------------------------------------------------- loom
+
 loom {
-	accessWidenerPath = file("src/main/resources/autoanvil.accesswidener")
+	accessWidenerPath = awFile
 
 	runs {
 		client {
-			// Developer end-to-end test: ./gradlew runClient -Pselftest
+			// each game version gets its own game folder (worlds and options don't go back to older versions)
+			runDir = mcVersion == project.default_minecraft_version ? "run" : "run-${mcVersion}"
+			// Developer end-to-end tests: ./gradlew runClient [-Pmc=26.2] -Pselftest   (Kit Factory: -Pselftest=factory)
 			if (project.hasProperty("selftest")) {
 				def mode = project.property("selftest")
 				vmArg "-Dautoanvil.selftest=${mode ? mode : 'true'}"
@@ -27,10 +168,14 @@ loom {
 }
 
 dependencies {
-	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	mappings loom.officialMojangMappings()
-	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	minecraft "com.mojang:minecraft:${mcVersion}"
+	if (target.remap) {
+		mappings loom.officialMojangMappings()
+	}
+	// The remap plugin wants mods in modImplementation; the plain plugin (26.x, no remapping) has no such configuration.
+	def modConfiguration = target.remap ? "modImplementation" : "implementation"
+	add(modConfiguration, "net.fabricmc:fabric-loader:${project.loader_version}")
+	add(modConfiguration, "net.fabricmc.fabric-api:fabric-api:${target.api}")
 
 	testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.11.4"
@@ -44,24 +189,26 @@ test {
 processResources {
 	def props = [
 		version             : project.version,
-		minecraft_dependency: "~${project.minecraft_version}",
-		java_version        : project.java_version,
+		minecraft_dependency: target.dependency,
+		java_version        : target.java,
 		loader_version      : project.loader_version,
 	]
 	inputs.properties(props)
 	filesMatching("fabric.mod.json") {
 		expand props
 	}
+	from(awFile)
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = project.java_version as int
+	it.options.release = target.java
 	it.options.encoding = "UTF-8"
+	it.options.compilerArgs += ["-Xmaxerrs", "5000"]
 }
 
 java {
-	sourceCompatibility = JavaVersion.toVersion(project.java_version)
-	targetCompatibility = JavaVersion.toVersion(project.java_version)
+	sourceCompatibility = JavaVersion.toVersion(target.java)
+	targetCompatibility = JavaVersion.toVersion(target.java)
 }
 
 jar {

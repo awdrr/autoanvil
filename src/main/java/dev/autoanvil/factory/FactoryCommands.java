@@ -6,7 +6,13 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import java.util.ArrayList;
 import java.util.List;
-import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+//#if MC >= 26.2
+//$$ import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument;
+//$$ import static net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal;
+//#else
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.argument;
+import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.literal;
+//#endif
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.client.Minecraft;
@@ -40,94 +46,94 @@ public final class FactoryCommands {
 	};
 
 	public static void register() {
-		ClientCommandRegistrationCallback.EVENT.register((d, reg) -> d.register(ClientCommandManager.literal("kitfactory")
+		ClientCommandRegistrationCallback.EVENT.register((d, reg) -> d.register(literal("kitfactory")
 				.executes(FactoryCommands::help)
-				.then(ClientCommandManager.literal("start").executes(c -> run(c, () -> Factory.start(Minecraft.getInstance(), false))))
-				.then(ClientCommandManager.literal("survey").executes(c -> run(c, () -> Factory.start(Minecraft.getInstance(), true))))
-				.then(ClientCommandManager.literal("stop").executes(c -> run(c, () -> Factory.stop("Stopped."))))
-				.then(ClientCommandManager.literal("status").executes(FactoryCommands::status))
-				.then(ClientCommandManager.literal("trades").executes(c -> run(c, () -> openNextTick = () -> new TradesScreen(null))))
-				.then(ClientCommandManager.literal("items").executes(c -> run(c, () -> openNextTick = () -> new ItemsScreen(null))))
-				.then(ClientCommandManager.literal("buy")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "buy", -1))
-								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
+				.then(literal("start").executes(c -> run(c, () -> Factory.start(Minecraft.getInstance(), false))))
+				.then(literal("survey").executes(c -> run(c, () -> Factory.start(Minecraft.getInstance(), true))))
+				.then(literal("stop").executes(c -> run(c, () -> Factory.stop("Stopped."))))
+				.then(literal("status").executes(FactoryCommands::status))
+				.then(literal("trades").executes(c -> run(c, () -> openNextTick = () -> new TradesScreen(null))))
+				.then(literal("items").executes(c -> run(c, () -> openNextTick = () -> new ItemsScreen(null))))
+				.then(literal("buy")
+						.then(argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "buy", -1))
+								.then(argument("count", IntegerArgumentType.integer(0, 10000))
 										.executes(c -> source(c, "buy", IntegerArgumentType.getInteger(c, "count"))))))
-				.then(ClientCommandManager.literal("craft")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "craft", -1))
-								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
+				.then(literal("craft")
+						.then(argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "craft", -1))
+								.then(argument("count", IntegerArgumentType.integer(0, 10000))
 										.executes(c -> source(c, "craft", IntegerArgumentType.getInteger(c, "count"))))))
-				.then(ClientCommandManager.literal("take")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "take", -1))
-								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
+				.then(literal("take")
+						.then(argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "take", -1))
+								.then(argument("count", IntegerArgumentType.integer(0, 10000))
 										.executes(c -> source(c, "take", IntegerArgumentType.getInteger(c, "count"))))))
-				.then(ClientCommandManager.literal("add")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, null, 27))
-								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
+				.then(literal("add")
+						.then(argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, null, 27))
+								.then(argument("count", IntegerArgumentType.integer(0, 10000))
 										.executes(c -> source(c, null, IntegerArgumentType.getInteger(c, "count"))))))
-				.then(ClientCommandManager.literal("remove")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(FactoryCommands::remove)))
-				.then(ClientCommandManager.literal("enchants")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> {
+				.then(literal("remove")
+						.then(argument("item", StringArgumentType.word()).suggests(ITEMS).executes(FactoryCommands::remove)))
+				.then(literal("enchants")
+						.then(argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> {
 							String id = FactoryConfig.resolve(StringArgumentType.getString(c, "item"));
 							if (id == null) return notAnItem(c);
 							openNextTick = () -> new EnchantsScreen(null, id);
 							return 1;
 						})))
-				.then(ClientCommandManager.literal("base").executes(FactoryCommands::base))
-				.then(ClientCommandManager.literal("path")
-						.then(ClientCommandManager.literal("add").executes(FactoryCommands::pathAdd))
-						.then(ClientCommandManager.literal("clear").executes(c -> {
+				.then(literal("base").executes(FactoryCommands::base))
+				.then(literal("path")
+						.then(literal("add").executes(FactoryCommands::pathAdd))
+						.then(literal("clear").executes(c -> {
 							Factory.cfg.path.clear();
 							Factory.cfg.save();
 							c.getSource().sendFeedback(Component.literal("Walkway cleared."));
 							return 1;
 						})))
-				.then(ClientCommandManager.literal("chest")
-						.then(ClientCommandManager.literal("input").executes(c -> chest(c, true)))
-						.then(ClientCommandManager.literal("output").executes(c -> chest(c, false)))
-						.then(ClientCommandManager.literal("clear").executes(c -> {
+				.then(literal("chest")
+						.then(literal("input").executes(c -> chest(c, true)))
+						.then(literal("output").executes(c -> chest(c, false)))
+						.then(literal("clear").executes(c -> {
 							Factory.cfg.inputChests.clear();
 							Factory.cfg.outputChests.clear();
 							Factory.cfg.save();
 							c.getSource().sendFeedback(Component.literal("Chests cleared."));
 							return 1;
 						})))
-				.then(ClientCommandManager.literal("set")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests((c, b) -> {
+				.then(literal("set")
+						.then(argument("item", StringArgumentType.word()).suggests((c, b) -> {
 							b.suggest("all");
 							return ITEMS.getSuggestions(c, b);
-						}).then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000)).executes(FactoryCommands::set))))
-				.then(ClientCommandManager.literal("reset").executes(c -> {
+						}).then(argument("count", IntegerArgumentType.integer(0, 10000)).executes(FactoryCommands::set))))
+				.then(literal("reset").executes(c -> {
 					Factory.cfg.done.clear();
 					Factory.cfg.save();
 					c.getSource().sendFeedback(Component.literal("Progress reset: counting from 0 again."));
 					return 1;
 				}))
-				.then(ClientCommandManager.literal("dropspot").executes(FactoryCommands::dropSpot)
-						.then(ClientCommandManager.literal("clear").executes(c -> {
+				.then(literal("dropspot").executes(FactoryCommands::dropSpot)
+						.then(literal("clear").executes(c -> {
 							Factory.cfg.dropSpot = null;
 							Factory.cfg.save();
 							c.getSource().sendFeedback(Component.literal("Drop spot cleared."));
 							return 1;
 						})))
-				.then(ClientCommandManager.literal("fisherman")
-						.then(ClientCommandManager.literal("xp").executes(FactoryCommands::xpFisherman))
-						.then(ClientCommandManager.literal("clear").executes(c -> {
+				.then(literal("fisherman")
+						.then(literal("xp").executes(FactoryCommands::xpFisherman))
+						.then(literal("clear").executes(c -> {
 							Factory.cfg.xpFisherman = null;
 							Factory.cfg.save();
 							c.getSource().sendFeedback(Component.literal("No fisherman for levels: one fisherman does emeralds and levels."));
 							return 1;
 						})))
-				.then(ClientCommandManager.literal("spare")
-						.then(ClientCommandManager.literal("chest").executes(c -> spare(c, "chest")))
-						.then(ClientCommandManager.literal("drop").executes(c -> spare(c, "drop"))))
-				.then(ClientCommandManager.literal("forget").executes(c -> {
+				.then(literal("spare")
+						.then(literal("chest").executes(c -> spare(c, "chest")))
+						.then(literal("drop").executes(c -> spare(c, "drop"))))
+				.then(literal("forget").executes(c -> {
 					TradeBook.reset();
 					c.getSource().sendFeedback(Component.literal("All recorded trades forgotten."));
 					return 1;
 				}))
-				.then(ClientCommandManager.literal("string")
-						.then(ClientCommandManager.argument("command", StringArgumentType.greedyString()).executes(c -> {
+				.then(literal("string")
+						.then(argument("command", StringArgumentType.greedyString()).executes(c -> {
 							String cmd = StringArgumentType.getString(c, "command").trim();
 							if (cmd.startsWith("/")) cmd = cmd.substring(1);
 							Factory.cfg.stringCommand = cmd;

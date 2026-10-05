@@ -1,10 +1,11 @@
 package dev.autoanvil.factory;
 
+import dev.autoanvil.compat.Gfx;
+import dev.autoanvil.compat.Ui;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
@@ -58,8 +59,7 @@ public final class ItemsScreen extends Screen {
 			int y = top + (i - scroll) * ROW;
 			EditBox box = new EditBox(font, left + 132, y + 2, 34, 16, Component.literal("amount"));
 			box.setValue(String.valueOf(cfg.targets.get(id)));
-			box.setFilter(s -> s.isEmpty() || s.matches("\\d{1,4}"));
-			box.setResponder(s -> cfg.targets.put(id, s.isEmpty() ? 0 : Integer.parseInt(s)));
+			Ui.digitsOnly(box, s -> cfg.targets.put(id, s.isEmpty() ? 0 : Integer.parseInt(s)));
 			addRenderableWidget(box);
 			amounts.put(id, box);
 			Button how = Button.builder(Component.literal(label(cfg.source(id))), b -> {
@@ -78,7 +78,7 @@ public final class ItemsScreen extends Screen {
 					.build();
 			addRenderableWidget(how);
 			sources.put(id, how);
-			Button ench = Button.builder(Component.literal("Enchants"), b -> minecraft.setScreen(new EnchantsScreen(this, id)))
+			Button ench = Button.builder(Component.literal("Enchants"), b -> Ui.setScreen(minecraft, new EnchantsScreen(this, id)))
 					.bounds(left + 220, y + 1, 58, 18).build();
 			addRenderableWidget(ench);
 			enchants.put(id, ench);
@@ -127,8 +127,14 @@ public final class ItemsScreen extends Screen {
 	}
 
 	@Override
-	public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
-		super.render(g, mouseX, mouseY, delta);
+	//#if MC >= 26.2
+	//$$ public void extractRenderState(net.minecraft.client.gui.GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+	//$$ 	super.extractRenderState(graphics, mouseX, mouseY, delta);
+	//#else
+	public void render(net.minecraft.client.gui.GuiGraphics graphics, int mouseX, int mouseY, float delta) {
+		super.render(graphics, mouseX, mouseY, delta);
+	//#endif
+		Gfx g = new Gfx(graphics);
 		FactoryConfig cfg = Factory.cfg;
 		int left = (width - W) / 2, top = 36;
 		g.drawCenteredString(font, title, width / 2, 10, 0xFFFFFFFF);
@@ -161,6 +167,6 @@ public final class ItemsScreen extends Screen {
 	@Override
 	public void onClose() {
 		Factory.cfg.save();
-		minecraft.setScreen(parent);
+		Ui.setScreen(minecraft, parent);
 	}
 }

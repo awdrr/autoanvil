@@ -1,11 +1,12 @@
 package dev.autoanvil.factory;
 
+import dev.autoanvil.compat.Gfx;
+import dev.autoanvil.compat.Ui;
 import dev.autoanvil.AutoAnvil;
 import dev.autoanvil.Catalog;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -79,8 +80,14 @@ public final class EnchantsScreen extends Screen {
 	}
 
 	@Override
-	public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
-		super.render(g, mouseX, mouseY, delta);
+	//#if MC >= 26.2
+	//$$ public void extractRenderState(net.minecraft.client.gui.GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+	//$$ 	super.extractRenderState(graphics, mouseX, mouseY, delta);
+	//#else
+	public void render(net.minecraft.client.gui.GuiGraphics graphics, int mouseX, int mouseY, float delta) {
+		super.render(graphics, mouseX, mouseY, delta);
+	//#endif
+		Gfx g = new Gfx(graphics);
 		int left = (width - W) / 2;
 		g.renderItem(sample, left, 8);
 		g.drawString(font, sample.getHoverName().getString() + " - tick what it gets (shared with all " + kind.replace('_', ' ') + "s)", left + 20, 12, 0xFFFFFFFF, false);
@@ -124,6 +131,6 @@ public final class EnchantsScreen extends Screen {
 	@Override
 	public void onClose() {
 		AutoAnvil.CONFIG.save();
-		minecraft.setScreen(parent);
+		Ui.setScreen(minecraft, parent);
 	}
 }

@@ -1,5 +1,6 @@
 package dev.autoanvil.ui;
 
+import dev.autoanvil.compat.Gfx;
 import dev.autoanvil.AutoAnvil;
 import dev.autoanvil.plan.Planner;
 import dev.autoanvil.plan.Xp;
@@ -11,7 +12,6 @@ import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarratedElementType;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
@@ -90,7 +90,7 @@ public final class Panel extends AbstractWidget {
 	// ---- layout: ops are collected first so the background can be sized to the content ----
 
 	private interface Op {
-		void draw(GuiGraphics g);
+		void draw(Gfx g);
 	}
 
 	private final List<Op> ops = new ArrayList<>();
@@ -125,7 +125,12 @@ public final class Panel extends AbstractWidget {
 	}
 
 	@Override
-	protected void renderWidget(GuiGraphics g, int mx, int my, float partialTick) {
+	//#if MC >= 26.2
+	//$$ protected void extractWidgetRenderState(net.minecraft.client.gui.GuiGraphicsExtractor graphics, int mx, int my, float partialTick) {
+	//#else
+	protected void renderWidget(net.minecraft.client.gui.GuiGraphics graphics, int mx, int my, float partialTick) {
+	//#endif
+		Gfx g = new Gfx(graphics);
 		place();
 		current = this;
 		ops.clear();

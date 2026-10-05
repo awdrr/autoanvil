@@ -2,7 +2,6 @@ package dev.autoanvil.mixin;
 
 import dev.autoanvil.AutoAnvil;
 import dev.autoanvil.ui.Panel;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.AnvilScreen;
 import org.spongepowered.asm.mixin.Mixin;
@@ -18,9 +17,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(AbstractContainerScreen.class)
 abstract class AbstractContainerScreenMixin {
+	//#if MC >= 26.2
+	//$$ @Inject(method = "extractSlot", at = @At("RETURN"))
+	//$$ private void autoanvil$queueNumber(net.minecraft.client.gui.GuiGraphicsExtractor g, Slot slot, int mouseX, int mouseY, CallbackInfo ci) {
+	//#else
 	@Inject(method = "renderSlot", at = @At("RETURN"))
-	private void autoanvil$queueNumber(GuiGraphics g, Slot slot, int mouseX, int mouseY, CallbackInfo ci) {
-		AutoAnvil.drawQueueNumber(g, slot);
+	private void autoanvil$queueNumber(net.minecraft.client.gui.GuiGraphics g, Slot slot, int mouseX, int mouseY, CallbackInfo ci) {
+	//#endif
+		AutoAnvil.drawQueueNumber(new dev.autoanvil.compat.Gfx(g), slot);
 	}
 
 	@Inject(method = "hasClickedOutside", at = @At("HEAD"), cancellable = true)

@@ -15,6 +15,6 @@ public abstract class MinecraftMixin {
 	 */
 	@Inject(method = "pauseGame", at = @At("HEAD"), cancellable = true)
 	private void autoanvil$keepRunningUnfocused(boolean pauseOnly, CallbackInfo ci) {
-		if (Factory.running() && !((Minecraft) (Object) this).isWindowActive()) ci.cancel();
+		if (Factory.running() && !dev.autoanvil.compat.Ui.windowActive((Minecraft) (Object) this)) ci.cancel();
 	}
 }

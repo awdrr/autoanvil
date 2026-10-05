@@ -1,5 +1,6 @@
 package dev.autoanvil;
 
+import dev.autoanvil.compat.Ui;
 import dev.autoanvil.run.Analysis;
 import dev.autoanvil.run.ItemQueue;
 import dev.autoanvil.run.Runner;
@@ -213,7 +214,7 @@ final class SelfTest {
 
 		/** Puts the real mouse cursor over a menu slot (the screen works out the hovered slot from it). */
 		private static void hover(Minecraft mc, int menuSlot) throws Exception {
-			AnvilScreen s = (AnvilScreen) mc.screen;
+			AnvilScreen s = (AnvilScreen) Ui.screen(mc);
 			net.minecraft.world.inventory.Slot slot = s.getMenu().getSlot(menuSlot);
 			double gx = s.leftPos + slot.x + 8, gy = s.topPos + slot.y + 8;
 			var w = mc.getWindow();
@@ -240,14 +241,14 @@ final class SelfTest {
 
 		private void screenshot(Minecraft mc, String name) {
 			shots++;
-			net.minecraft.client.Screenshot.grab(mc.gameDirectory, "autoanvil-" + name + ".png", mc.getMainRenderTarget(), 1,
+			net.minecraft.client.Screenshot.grab(mc.gameDirectory, "autoanvil-" + name + ".png", Ui.mainRenderTarget(mc), 1,
 					c -> AutoAnvil.LOGGER.info("[selftest] screenshot: {}", c.getString()));
 		}
 
 		private void tick(Minecraft mc) {
 			ticks++;
 			if (stepIdx == 0 && steps.isEmpty()) build();
-			if (stepIdx >= 2 && mc.screen instanceof PauseScreen) mc.setScreen(null);
+			if (stepIdx >= 2 && Ui.screen(mc) instanceof PauseScreen) Ui.setScreen(mc, null);
 			if (stepIdx >= steps.size()) return;
 			try {
 				if (steps.get(stepIdx).tick(mc, ticks - stepStart)) {
@@ -271,20 +272,19 @@ final class SelfTest {
 		private void build() {
 			// 0: world
 			add((mc, t) -> {
-				if (!(mc.screen instanceof TitleScreen) || mc.getOverlay() != null) return false;
+				if (!(Ui.screen(mc) instanceof TitleScreen) || Ui.overlay(mc) != null) return false;
 				mc.options.pauseOnLostFocus = false;
 				AutoAnvil.CONFIG = new Config(); // defaults, whatever earlier runs saved
 				AutoAnvil.CONFIG.save();
 				String name = "autoanvil-selftest-" + (System.currentTimeMillis() / 1000);
-				LevelSettings settings = new LevelSettings(name, GameType.SURVIVAL, false, Difficulty.PEACEFUL, true,
-						new GameRules(FeatureFlags.DEFAULT_FLAGS), WorldDataConfiguration.DEFAULT);
+				LevelSettings settings = Ui.survivalWorld(name);
 				mc.createWorldOpenFlows().createFreshLevel(name, settings, new WorldOptions(4321L, false, false),
-						WorldPresets::createFlatWorldDimensions, mc.screen);
+						Ui::flatDimensions, Ui.screen(mc));
 				return true;
 			});
 			// 1: anvil
 			add((mc, t) -> {
-				if (mc.level == null || mc.player == null || mc.screen != null || t < 40) return false;
+				if (mc.level == null || mc.player == null || Ui.screen(mc) != null || t < 40) return false;
 				mc.player.connection.sendCommand("time set noon");
 				anvil = onServer(mc, () -> {
 					ServerPlayer p = sp(mc);
@@ -305,7 +305,7 @@ final class SelfTest {
 				openAnvil(mc);
 				return true;
 			});
-			add((mc, t) -> mc.screen instanceof AnvilScreen && t > 10 && AutoAnvil.analysis != null);
+			add((mc, t) -> Ui.screen(mc) instanceof AnvilScreen && t > 10 && AutoAnvil.analysis != null);
 			add((mc, t) -> t % 3 == 0 && select(x -> !x.isBook() && x.stack.is(Items.NETHERITE_HELMET)));
 			add((mc, t) -> {
 				if (t < 5) return false;
@@ -537,7 +537,7 @@ final class SelfTest {
 				return true;
 			});
 			add((mc, t) -> {
-				if (mc.screen instanceof AnvilScreen || t < 20) return false;
+				if (Ui.screen(mc) instanceof AnvilScreen || t < 20) return false;
 				Runner r = AutoAnvil.runner;
 				check(r != null && r.finished() && "Anvil closed".equals(r.error), "S5 run stops when the anvil goes away (" + (r == null ? null : r.status) + ")");
 				List<ItemStack> inv = inventory(mc);
@@ -549,7 +549,7 @@ final class SelfTest {
 			});
 			add((mc, t) -> {
 				if (t == 5) openAnvil(mc);
-				return mc.screen instanceof AnvilScreen && t > 15;
+				return Ui.screen(mc) instanceof AnvilScreen && t > 15;
 			});
 			add((mc, t) -> t % 3 == 0 && select(x -> !x.isBook() && x.stack.is(Items.NETHERITE_LEGGINGS)));
 			add((mc, t) -> {

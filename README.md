@@ -1,4 +1,4 @@
-# Auto Anvil (Fabric 1.21.11)
+# Auto Anvil (Fabric 1.21.11 and 26.2)
 
 Opens a panel next to every anvil. It combines the enchanted books in your inventory onto armor and tools,
 or into one big book, in the cheapest order. It does all the clicking for you, and when you don't have enough
@@ -203,10 +203,17 @@ There is also a "Start / stop Kit Factory" key in Controls (unbound by default).
 
 ## Building / testing
 
+One source tree builds for both game versions: `-Pmc=26.2` picks 26.2 (1.21.11 is the default). The few
+version-specific lines sit behind `//#if MC >= 26.2 ... //#else ... //#endif` (inactive lines are kept commented
+out with `//$$`), mostly in `compat/Ui.java` (screens and chat moved onto `Minecraft.gui`, Fabric renamed its
+command, key mapping and screen helpers) and `compat/Gfx.java` (26.2 draws through `GuiGraphicsExtractor`).
+
 ```
-./gradlew build                     # jar in build/libs, runs the planner unit tests
+./gradlew build                     # 1.21.11 jar in build/libs, runs the planner unit tests
+./gradlew build -Pmc=26.2           # 26.2 jar (Java 25)
 ./gradlew runClient -Pselftest      # end-to-end test in a real survival world (see SelfTest.java)
 ./gradlew runClient -Pselftest=factory   # Kit Factory end to end in a test hall (see FactoryTest.java)
+./gradlew runClient -Pmc=26.2 -Pselftest[=factory]   # the same on 26.2 (its own game folder, run-26.2/)
 ```
 
 The self-test puts books and gear in a survival inventory and clicks the panel the way a player would. It

@@ -1,8 +1,9 @@
 package dev.autoanvil.factory;
 
+import dev.autoanvil.compat.Gfx;
+import dev.autoanvil.compat.Ui;
 import java.util.ArrayList;
 import java.util.List;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
@@ -48,8 +49,7 @@ public final class TradesScreen extends Screen {
 			TradeBook.Offer o = l.offer;
 			EditBox box = new EditBox(font, left + 190, y - 1, 34, 12, Component.literal("price"));
 			box.setValue(String.valueOf(o.price));
-			box.setFilter(s -> s.isEmpty() || s.matches("\\d{1,4}"));
-			box.setResponder(s -> {
+			Ui.digitsOnly(box, s -> {
 				if (s.isEmpty()) return;
 				int v = Integer.parseInt(s);
 				if (v != o.price) {
@@ -64,8 +64,14 @@ public final class TradesScreen extends Screen {
 	}
 
 	@Override
-	public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
-		super.render(g, mouseX, mouseY, delta);
+	//#if MC >= 26.2
+	//$$ public void extractRenderState(net.minecraft.client.gui.GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+	//$$ 	super.extractRenderState(graphics, mouseX, mouseY, delta);
+	//#else
+	public void render(net.minecraft.client.gui.GuiGraphics graphics, int mouseX, int mouseY, float delta) {
+		super.render(graphics, mouseX, mouseY, delta);
+	//#endif
+		Gfx g = new Gfx(graphics);
 		int left = (width - W) / 2, top = 32;
 		g.drawCenteredString(font, title, width / 2, 10, 0xFFFFFFFF);
 		if (lines.isEmpty()) {
@@ -117,6 +123,6 @@ public final class TradesScreen extends Screen {
 	@Override
 	public void onClose() {
 		TradeBook.get().save();
-		minecraft.setScreen(parent);
+		Ui.setScreen(minecraft, parent);
 	}
 }

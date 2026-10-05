@@ -1,5 +1,6 @@
 package dev.autoanvil;
 
+import dev.autoanvil.compat.Ui;
 import com.mojang.blaze3d.platform.InputConstants;
 import dev.autoanvil.plan.Planner;
 import dev.autoanvil.run.Analysis;
@@ -14,7 +15,6 @@ import java.util.List;
 import java.util.Map;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenKeyboardEvents;
@@ -23,7 +23,6 @@ import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.inventory.Slot;
@@ -70,9 +69,10 @@ public final class AutoAnvil implements ClientModInitializer {
 		CONFIG = Config.load();
 		dev.autoanvil.factory.Factory.init();
 		dev.autoanvil.factory.FactoryCommands.register();
-		dev.autoanvil.factory.Factory.toggleKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.autoanvil.factory",
+		dev.autoanvil.factory.Factory.toggleKey = Ui.registerKey(new KeyMapping("key.autoanvil.factory",
 				InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), CATEGORY));
-		net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MOD_ID, "factory"), (g, delta) -> {
+		net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MOD_ID, "factory"), (graphics, delta) -> {
+			dev.autoanvil.compat.Gfx g = new dev.autoanvil.compat.Gfx(graphics);
 			Minecraft m = Minecraft.getInstance();
 			if (m.player == null) return;
 			int y = 4;
@@ -83,18 +83,18 @@ public final class AutoAnvil implements ClientModInitializer {
 		});
 		ClientTickEvents.END_CLIENT_TICK.register(m -> {
 			dev.autoanvil.factory.Factory.tick(m);
-			if (dev.autoanvil.factory.FactoryCommands.openNextTick != null && m.screen == null) {
+			if (dev.autoanvil.factory.FactoryCommands.openNextTick != null && Ui.screen(m) == null) {
 				var open = dev.autoanvil.factory.FactoryCommands.openNextTick;
 				dev.autoanvil.factory.FactoryCommands.openNextTick = null;
-				m.setScreen(open.get());
+				Ui.setScreen(m, open.get());
 			}
 		});
-		queueKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.autoanvil.queue", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_R, CATEGORY));
+		queueKey = Ui.registerKey(new KeyMapping("key.autoanvil.queue", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_R, CATEGORY));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(ItemQueue.ENTRIES::clear));
 		ScreenEvents.AFTER_INIT.register((client, s, w, h) -> {
 			// Esc doesn't stop the Kit Factory (it keeps going under the pause menu): this does
 			if (s instanceof net.minecraft.client.gui.screens.PauseScreen && dev.autoanvil.factory.Factory.running()) {
-				Screens.getButtons(s).add(net.minecraft.client.gui.components.Button.builder(Component.literal("Stop Kit Factory"), b -> {
+				Ui.widgets(s).add(net.minecraft.client.gui.components.Button.builder(Component.literal("Stop Kit Factory"), b -> {
 					dev.autoanvil.factory.Factory.stop("Stopped.");
 					b.visible = false;
 				}).bounds(w / 2 - 60, 6, 120, 20).build());
@@ -108,7 +108,7 @@ public final class AutoAnvil implements ClientModInitializer {
 				screen = anvil;
 				dirty = true;
 			}
-			Screens.getButtons(anvil).add(new Panel(anvil));
+			Ui.widgets(anvil).add(new Panel(anvil));
 		});
 		ClientTickEvents.END_CLIENT_TICK.register(AutoAnvil::tick);
 		SelfTest.registerIfRequested();
@@ -117,7 +117,7 @@ public final class AutoAnvil implements ClientModInitializer {
 	public static void chat(Component msg) {
 		Minecraft mc = Minecraft.getInstance();
 		if (CONFIG.chatMessages && mc.player != null) {
-			mc.player.displayClientMessage(Component.literal("[Auto Anvil] ").withStyle(ChatFormatting.GOLD).append(msg.copy().withStyle(ChatFormatting.GRAY)), false);
+			Ui.message(mc.player, Component.literal("[Auto Anvil] ").withStyle(ChatFormatting.GOLD).append(msg.copy().withStyle(ChatFormatting.GRAY)), false);
 		}
 		LOGGER.info(msg.getString());
 	}
@@ -137,7 +137,7 @@ public final class AutoAnvil implements ClientModInitializer {
 	}
 
 	/** Gold queue number in the corner of a queued item's slot (called from the slot renderer, slot-local coords). */
-	public static void drawQueueNumber(GuiGraphics g, Slot slot) {
+	public static void drawQueueNumber(dev.autoanvil.compat.Gfx g, Slot slot) {
 		Minecraft mc = Minecraft.getInstance();
 		if (ItemQueue.isEmpty() || mc.player == null || slot.container != mc.player.getInventory() || !slot.hasItem()) return;
 		int k = ItemQueue.indexOf(mc.player.getInventory(), slot.getContainerSlot());
@@ -147,7 +147,7 @@ public final class AutoAnvil implements ClientModInitializer {
 
 	private static void actionBar(String msg) {
 		Minecraft mc = Minecraft.getInstance();
-		if (mc.player != null) mc.player.displayClientMessage(Component.literal(msg).withStyle(ChatFormatting.GOLD), true);
+		if (mc.player != null) Ui.message(mc.player, Component.literal(msg).withStyle(ChatFormatting.GOLD), true);
 	}
 
 	private static void tick(Minecraft mc) {
@@ -159,7 +159,7 @@ public final class AutoAnvil implements ClientModInitializer {
 			}
 			if (!ItemQueue.isEmpty()) ItemQueue.follow(mc.player.getInventory());
 		}
-		if (!(mc.screen instanceof AnvilScreen anvil) || mc.player == null || mc.level == null) {
+		if (!(Ui.screen(mc) instanceof AnvilScreen anvil) || mc.player == null || mc.level == null) {
 			if (screen != null) {
 				if (running()) runner.closed();
 				screen = null;

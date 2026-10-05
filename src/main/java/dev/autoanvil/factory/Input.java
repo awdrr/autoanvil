@@ -1,6 +1,6 @@
 package dev.autoanvil.factory;
 
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import dev.autoanvil.compat.Ui;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -26,7 +26,7 @@ public final class Input {
 
 	/** A mouse click on a slot of the open container screen: press and release at the slot's centre. */
 	public static boolean clickSlot(Minecraft mc, int slotIndex, int button, boolean shift) {
-		if (!(mc.screen instanceof AbstractContainerScreen<?> s)) return false;
+		if (!(Ui.screen(mc) instanceof AbstractContainerScreen<?> s)) return false;
 		if (slotIndex < 0 || slotIndex >= s.getMenu().slots.size()) return false;
 		Slot slot = s.getMenu().getSlot(slotIndex);
 		return click(s, s.leftPos + slot.x + 8, s.topPos + slot.y + 8, button, shift);
@@ -75,17 +75,17 @@ public final class Input {
 
 	/** Esc on the open screen (closes containers the way a player does). */
 	public static void escape(Minecraft mc) {
-		if (mc.screen != null) key(mc.screen, GLFW.GLFW_KEY_ESCAPE);
+		if (Ui.screen(mc) != null) key(Ui.screen(mc), GLFW.GLFW_KEY_ESCAPE);
 	}
 
 	/** One press of the use key (right click by default), handled by the game on its next tick. */
 	public static void pressUse(Minecraft mc) {
-		KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyUse));
+		KeyMapping.click(Ui.boundKey(mc.options.keyUse));
 	}
 
 	/** One press of a hotbar number key. */
 	public static void pressHotbar(Minecraft mc, int slot) {
-		KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyHotbarSlots[slot]));
+		KeyMapping.click(Ui.boundKey(mc.options.keyHotbarSlots[slot]));
 	}
 
 	/**
@@ -93,8 +93,8 @@ public final class Input {
 	 * knows), and they're how you tab out, so walking and turning carry on under them. Never in any other screen.
 	 */
 	public static boolean free(Minecraft mc) {
-		return mc.screen == null || mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen
-				|| mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen;
+		return Ui.screen(mc) == null || Ui.screen(mc) instanceof net.minecraft.client.gui.screens.ChatScreen
+				|| Ui.screen(mc) instanceof net.minecraft.client.gui.screens.PauseScreen;
 	}
 
 	/** Holds or releases the forward key. Refused while a screen is open: no walking in menus. */

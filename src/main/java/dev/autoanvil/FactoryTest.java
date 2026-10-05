@@ -1,5 +1,6 @@
 package dev.autoanvil;
 
+import dev.autoanvil.compat.Ui;
 import dev.autoanvil.factory.Factory;
 import dev.autoanvil.factory.FactoryConfig;
 import dev.autoanvil.factory.Input;
@@ -141,10 +142,10 @@ final class FactoryTest {
 		void watch(Minecraft mc) {
 			if (mc.player == null) return;
 			boolean screen = !dev.autoanvil.factory.Input.free(mc); // the chat doesn't count: walking goes on under it
-			if (mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen
+			if (Ui.screen(mc) instanceof net.minecraft.client.gui.screens.ChatScreen
 					&& (mc.options.keyUp.isDown() || mc.options.keyLeft.isDown() || mc.options.keyRight.isDown() || mc.options.keyDown.isDown())) chatWalkTicks++;
-			if (mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen) pauseSeen = true;
-			if (mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen && lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) chatMoveTicks++;
+			if (Ui.screen(mc) instanceof net.minecraft.client.gui.screens.PauseScreen) pauseSeen = true;
+			if (Ui.screen(mc) instanceof net.minecraft.client.gui.screens.ChatScreen && lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) chatMoveTicks++;
 			if (screen && lastScreen) {
 				if (lastPos != null && mc.player.position().distanceTo(lastPos) > 0.03) screenMoves++;
 				if (Math.abs(mc.player.getYRot() - lastYaw) > 0.01 || Math.abs(mc.player.getXRot() - lastPitch) > 0.01) screenTurns++;
@@ -182,7 +183,7 @@ final class FactoryTest {
 		}
 
 		static void villager(ServerLevel l, double x, double y, double z, ResourceKey<VillagerProfession> prof, MerchantOffer... offers) {
-			Villager v = new Villager(EntityType.VILLAGER, l);
+			Villager v = new Villager(Ui.villagerType(), l);
 			v.setPos(x, y, z);
 			v.setYRot(0);
 			v.setNoAi(true);
@@ -198,17 +199,16 @@ final class FactoryTest {
 		void step(Minecraft mc) {
 			switch (phase) {
 				case 0 -> {
-					if (!(mc.screen instanceof TitleScreen) || mc.getOverlay() != null) return;
+					if (!(Ui.screen(mc) instanceof TitleScreen) || Ui.overlay(mc) != null) return;
 					mc.options.pauseOnLostFocus = false;
 					String name = "autoanvil-factorytest-" + (System.currentTimeMillis() / 1000);
-					LevelSettings settings = new LevelSettings(name, GameType.SURVIVAL, false, Difficulty.PEACEFUL, true,
-							new GameRules(FeatureFlags.DEFAULT_FLAGS), WorldDataConfiguration.DEFAULT);
+					LevelSettings settings = Ui.survivalWorld(name);
 					mc.createWorldOpenFlows().createFreshLevel(name, settings, new WorldOptions(99L, false, false),
-							WorldPresets::createFlatWorldDimensions, mc.screen);
+							Ui::flatDimensions, Ui.screen(mc));
 					next();
 				}
 				case 1 -> {
-					if (mc.level == null || mc.player == null || mc.screen != null || in() < 40) return;
+					if (mc.level == null || mc.player == null || Ui.screen(mc) != null || in() < 40) return;
 					// fresh factory state, whatever an earlier run saved
 					TradeBook.reset();
 					Factory.cfg = new FactoryConfig();
@@ -217,7 +217,7 @@ final class FactoryTest {
 					cmd(mc, "time set noon");
 					cmd(mc, "gamerule advance_time false");
 					// open to LAN, like a server: the pause menu doesn't pause the game
-					mc.getSingleplayerServer().publishServer(GameType.SURVIVAL, false, net.minecraft.util.HttpUtil.getAvailablePort());
+					Ui.openToLan(mc.getSingleplayerServer(), net.minecraft.util.HttpUtil.getAvailablePort());
 					y = server(mc, () -> mc.getSingleplayerServer().overworld().getHeight(Heightmap.Types.MOTION_BLOCKING, 0, 0));
 					anvil = new BlockPos(-1, y, 2);
 					table = new BlockPos(0, y, 2);
@@ -361,7 +361,7 @@ final class FactoryTest {
 					next();
 				}
 				case 4 -> {
-					if (!(mc.screen instanceof TradesScreen ts)) {
+					if (!(Ui.screen(mc) instanceof TradesScreen ts)) {
 						if (in() > 40) {
 							check(false, "trades screen opened");
 							next();
@@ -495,7 +495,7 @@ final class FactoryTest {
 					next();
 				}
 				case 9 -> { // the items screen: switch the pickaxe to Craft, 1 of them
-					if (!(mc.screen instanceof ItemsScreen is)) {
+					if (!(Ui.screen(mc) instanceof ItemsScreen is)) {
 						if (in() > 40) {
 							check(false, "items screen opened");
 							finish(mc);
@@ -630,7 +630,7 @@ final class FactoryTest {
 					next();
 				}
 				case 13 -> { // the shield's Enchants button: untick Mending
-					if (mc.screen instanceof ItemsScreen is && in() > 20 && enchPhase == 0) {
+					if (Ui.screen(mc) instanceof ItemsScreen is && in() > 20 && enchPhase == 0) {
 						for (int i = 0; i < 12; i++) is.mouseScrolled(0, 0, 0, -1); // the new items are at the bottom of the list
 						var b = is.enchantsButton("minecraft:shield");
 						check(b != null, "items screen has an Enchants button for the shield");
@@ -644,7 +644,7 @@ final class FactoryTest {
 						return;
 					}
 					if (enchPhase == 1 && in() - enchAt > 10) {
-						if (!(mc.screen instanceof dev.autoanvil.factory.EnchantsScreen es)) {
+						if (!(Ui.screen(mc) instanceof dev.autoanvil.factory.EnchantsScreen es)) {
 							check(false, "Enchants opens the enchantment list");
 							finish(mc);
 							return;
@@ -661,29 +661,29 @@ final class FactoryTest {
 						return;
 					}
 					if (enchPhase == 2 && in() - enchAt > 5) {
-						if (mc.screen != null) mc.screen.onClose();
+						if (Ui.screen(mc) != null) Ui.screen(mc).onClose();
 						next();
 					}
 				}
 				case 14 -> { // run it with the pause menu open part of the time, the window in focus: the cursor is never taken
-					if (in() == 5) mc.setWindowActive(true);
+					if (in() == 5) Ui.setWindowActive(mc, true);
 					if (in() == 10) cmd(mc, "kitfactory start");
 					if (in() < 12) return;
 					if (Factory.running() && mc.mouseHandler.isMouseGrabbed()) grabbedTicks++;
-					if (!pauseOpened && Factory.running() && mc.screen == null && Factory.status.startsWith("Walking")) {
-						mc.setScreen(new net.minecraft.client.gui.screens.PauseScreen(true));
+					if (!pauseOpened && Factory.running() && Ui.screen(mc) == null && Factory.status.startsWith("Walking")) {
+						Ui.setScreen(mc, new net.minecraft.client.gui.screens.PauseScreen(true));
 						pauseOpened = true;
 					}
-					if (pauseOpened && mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen ps) {
+					if (pauseOpened && Ui.screen(mc) instanceof net.minecraft.client.gui.screens.PauseScreen ps) {
 						if (sawOtherScreen) pauseBack = true;
-						for (var w : net.fabricmc.fabric.api.client.screen.v1.Screens.getButtons(ps)) {
+						for (var w : Ui.widgets(ps)) {
 							if (w.getMessage().getString().equals("Stop Kit Factory")) stopButton = true;
 						}
-					} else if (pauseOpened && mc.screen != null) {
+					} else if (pauseOpened && Ui.screen(mc) != null) {
 						sawOtherScreen = true;
 					}
 					if (Factory.running() && in() < 20 * 60 * 6) return;
-					if (mc.screen != null) mc.setScreen(null);
+					if (Ui.screen(mc) != null) Ui.setScreen(mc, null);
 					check(Factory.lastMessage.startsWith("All done"), "shield and bow: factory finishes with the pause menu open part of the time (" + Factory.lastMessage + ")");
 					check(pauseBack && stopButton, "pause menu came back after the factory's clicks, with a Stop Kit Factory button");
 					check(grabbedTicks == 0, "the cursor was never taken while it ran (" + grabbedTicks + " ticks)");
@@ -740,21 +740,21 @@ final class FactoryTest {
 		void chatAndTabOut(Minecraft mc) {
 			switch (chatPhase) {
 				case 0 -> {
-					if (in() > 20 * 20 && mc.screen == null && Factory.running() && Factory.status.startsWith("Walking")) {
-						mc.setScreen(new net.minecraft.client.gui.screens.ChatScreen("hello", false));
+					if (in() > 20 * 20 && Ui.screen(mc) == null && Factory.running() && Factory.status.startsWith("Walking")) {
+						Ui.setScreen(mc, new net.minecraft.client.gui.screens.ChatScreen("hello", false));
 						chatAt = in();
 						chatPhase = 1;
 					}
 				}
 				case 1 -> {
 					if (in() - chatAt < 60) return;
-					typedLeftAlone = mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen cs && cs.input.getValue().equals("hello");
-					mc.setScreen(null);
+					typedLeftAlone = Ui.screen(mc) instanceof net.minecraft.client.gui.screens.ChatScreen cs && cs.input.getValue().equals("hello");
+					Ui.setScreen(mc, null);
 					chatPhase = 2;
 				}
 				case 2 -> {
-					if (mc.screen != null || !Factory.status.startsWith("Walking")) return;
-					mc.setScreen(new net.minecraft.client.gui.screens.ChatScreen("", false));
+					if (Ui.screen(mc) != null || !Factory.status.startsWith("Walking")) return;
+					Ui.setScreen(mc, new net.minecraft.client.gui.screens.ChatScreen("", false));
 					mc.options.pauseOnLostFocus = true;
 					pauseSeen = false;
 					decisionsAtChat = Factory.decisions.size();
@@ -762,9 +762,10 @@ final class FactoryTest {
 					chatPhase = 3;
 				}
 				case 3 -> {
-					mc.setWindowActive(false);
+					Ui.setWindowActive(mc, false);
+					mc.pauseGame(false); // what the game does when the window has been out of focus a moment
 					if (in() - chatAt < 20 * 20) return;
-					mc.setWindowActive(true);
+					Ui.setWindowActive(mc, true);
 					mc.options.pauseOnLostFocus = false;
 					check(typedLeftAlone, "chat with something typed in it was left open for you");
 					check(!pauseSeen && Factory.decisions.size() > decisionsAtChat,

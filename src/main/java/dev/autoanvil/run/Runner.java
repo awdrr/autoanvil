@@ -12,7 +12,6 @@ import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.core.Holder;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.inventory.AnvilMenu;
-import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.enchantment.Enchantment;
 
@@ -139,8 +138,8 @@ public final class Runner {
 	}
 
 	/** A real mouse click on the anvil screen (shift-click for QUICK_MOVE); the game handles it like a player's. */
-	private void click(Minecraft mc, AnvilMenu menu, int slot, int button, ClickType type) {
-		dev.autoanvil.factory.Input.clickSlot(mc, slot, button, type == ClickType.QUICK_MOVE);
+	private void click(Minecraft mc, AnvilMenu menu, int slot, int button, boolean shift) {
+		dev.autoanvil.factory.Input.clickSlot(mc, slot, button, shift);
 		wait = delay(mc);
 	}
 
@@ -166,7 +165,7 @@ public final class Runner {
 						fail("Inventory full");
 						return;
 					}
-					click(mc, menu, empty, 0, ClickType.PICKUP);
+					click(mc, menu, empty, 0, false);
 					return;
 				}
 				for (int s = 0; s < 2; s++) {
@@ -175,7 +174,7 @@ public final class Runner {
 							fail("Could not empty the anvil (inventory full?)");
 							return;
 						}
-						click(mc, menu, s, 0, ClickType.QUICK_MOVE);
+						click(mc, menu, s, 0, true);
 						return;
 					}
 				}
@@ -196,13 +195,13 @@ public final class Runner {
 				}
 				status = "Step " + (stepIdx + 1) + "/" + job.plan.steps.size() + ": " + describe(step);
 				statusColor = COLOR_INFO;
-				click(mc, menu, where.get(step.left), 0, ClickType.QUICK_MOVE);
+				click(mc, menu, where.get(step.left), 0, true);
 				go(Phase.PUT_LEFT);
 			}
 			case PUT_LEFT -> {
 				Planner.Node step = job.plan.steps.get(stepIdx);
 				if (ItemStack.matches(at(menu, 0), expect.get(step.left))) {
-					click(mc, menu, where.get(step.right), 0, ClickType.QUICK_MOVE);
+					click(mc, menu, where.get(step.right), 0, true);
 					go(Phase.PUT_RIGHT);
 				} else if (phaseTicks > timeout) {
 					fail("Could not put " + expect.get(step.left).getHoverName().getString() + " in the anvil");
@@ -265,7 +264,7 @@ public final class Runner {
 				snapshot = new ItemStack[menu.slots.size()];
 				for (int i = 0; i < snapshot.length; i++) snapshot[i] = at(menu, i).copy();
 				levelBefore = level;
-				click(mc, menu, AnvilMenu.RESULT_SLOT, 0, ClickType.QUICK_MOVE);
+				click(mc, menu, AnvilMenu.RESULT_SLOT, 0, true);
 				go(Phase.TAKE);
 			}
 			case TAKE -> {
@@ -301,7 +300,7 @@ public final class Runner {
 				waitingForXp = false;
 				for (int s = 0; s < 2; s++) {
 					if (!at(menu, s).isEmpty() && phaseTicks < timeout) {
-						click(mc, menu, s, 0, ClickType.QUICK_MOVE);
+						click(mc, menu, s, 0, true);
 						return;
 					}
 				}

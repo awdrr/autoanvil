@@ -1,5 +1,6 @@
 package dev.autoanvil.factory;
 
+import dev.autoanvil.compat.Ui;
 import dev.autoanvil.AutoAnvil;
 import dev.autoanvil.run.ItemQueue;
 import dev.autoanvil.run.Runner;
@@ -16,7 +17,6 @@ import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -27,7 +27,6 @@ import net.minecraft.client.gui.screens.inventory.AnvilScreen;
 import net.minecraft.client.gui.screens.inventory.ContainerScreen;
 import net.minecraft.client.gui.screens.inventory.CraftingScreen;
 import net.minecraft.client.gui.screens.inventory.MerchantScreen;
-import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -103,9 +102,9 @@ public final class Factory {
 		 * close. True while that's going on.
 		 */
 		boolean screenInTheWay(Minecraft mc) {
-			if (mc.screen == null) return false;
-			if (mc.screen instanceof PauseScreen) closedPause = true;
-			if (mc.screen instanceof ChatScreen cs && cs.input != null && !cs.input.getValue().isEmpty()) {
+			if (Ui.screen(mc) == null) return false;
+			if (Ui.screen(mc) instanceof PauseScreen) closedPause = true;
+			if (Ui.screen(mc) instanceof ChatScreen cs && cs.input != null && !cs.input.getValue().isEmpty()) {
 				status = "Waiting for you to send or close the chat";
 				return true;
 			}
@@ -190,7 +189,7 @@ public final class Factory {
 	public static void start(Minecraft mc, boolean survey) {
 		if (running) return;
 		mc.mouseHandler.releaseMouse(); // the cursor stays yours while it runs (it never grabs it)
-		pauseWanted = mc.screen instanceof PauseScreen;
+		pauseWanted = Ui.screen(mc) instanceof PauseScreen;
 		if (cfg.base == null) {
 			say("Mark the base first: stand where you can reach the anvil, crafting table and chests and type /kitfactory base");
 			return;
@@ -246,7 +245,7 @@ public final class Factory {
 		AutoAnvil.LOGGER.info("[Kit Factory] {}", msg);
 		Minecraft mc = Minecraft.getInstance();
 		if (mc.player != null) {
-			mc.player.displayClientMessage(Component.literal("[Kit Factory] ").withStyle(ChatFormatting.AQUA)
+			Ui.message(mc.player, Component.literal("[Kit Factory] ").withStyle(ChatFormatting.AQUA)
 					.append(Component.literal(msg).withStyle(ChatFormatting.GRAY)), false);
 		}
 	}
@@ -266,9 +265,9 @@ public final class Factory {
 			return;
 		}
 		// the pause menu doesn't stop it (it has a Stop button): it's closed for each click in the world and opened again
-		if (mc.screen instanceof PauseScreen) pauseWanted = true;
-		else if (lastWasPause && mc.screen == null && !closedPause) pauseWanted = false; // closed by you
-		lastWasPause = mc.screen instanceof PauseScreen;
+		if (Ui.screen(mc) instanceof PauseScreen) pauseWanted = true;
+		else if (lastWasPause && Ui.screen(mc) == null && !closedPause) pauseWanted = false; // closed by you
+		lastWasPause = Ui.screen(mc) instanceof PauseScreen;
 		closedPause = false;
 		if (mc.player.isDeadOrDying()) {
 			stop("You died.");
@@ -317,7 +316,7 @@ public final class Factory {
 				ItemStack it = mc.player.getInventory().getItem(i);
 				if (!it.isEmpty()) inv.append(i).append('=').append(it.getCount()).append(' ').append(Kit.id(it.getItem())).append("; ");
 			}
-			AutoAnvil.LOGGER.info("[Kit Factory] inventory at failure: {} screen={}", inv, mc.screen == null ? null : mc.screen.getClass().getSimpleName());
+			AutoAnvil.LOGGER.info("[Kit Factory] inventory at failure: {} screen={}", inv, Ui.screen(mc) == null ? null : Ui.screen(mc).getClass().getSimpleName());
 			steps.clear();
 			Input.releaseMovement(mc);
 			if (failures >= 4) {
@@ -610,8 +609,8 @@ public final class Factory {
 			for (int[] c : cfg.inputChests) {
 				s.add(openBlock(FactoryConfig.pos(c), "input chest", x -> x instanceof ContainerScreen)
 						.skipIf(() -> count(inv, material) == 0 && enoughBooks.getAsBoolean()));
-				s.add(bank(material, 0, "Putting leftover materials back").skipIf(() -> !(Minecraft.getInstance().screen instanceof ContainerScreen)));
-				s.add(take(Factory::plainBook, books).skipIf(() -> enoughBooks.getAsBoolean() || !(Minecraft.getInstance().screen instanceof ContainerScreen)));
+				s.add(bank(material, 0, "Putting leftover materials back").skipIf(() -> !(Ui.screen(Minecraft.getInstance()) instanceof ContainerScreen)));
+				s.add(take(Factory::plainBook, books).skipIf(() -> enoughBooks.getAsBoolean() || !(Ui.screen(Minecraft.getInstance()) instanceof ContainerScreen)));
 				s.add(closeScreens());
 			}
 			plan("craft " + typeId, sig, s.toArray(new Step[0]));
@@ -759,7 +758,7 @@ public final class Factory {
 		for (int[] c : cfg.inputChests) {
 			BooleanSupplier enough = () -> count(inv, pred) >= amount;
 			s.add(openBlock(FactoryConfig.pos(c), "input chest", x -> x instanceof ContainerScreen).skipIf(enough));
-			s.add(take(pred, amount).skipIf(() -> !(Minecraft.getInstance().screen instanceof ContainerScreen)));
+			s.add(take(pred, amount).skipIf(() -> !(Ui.screen(Minecraft.getInstance()) instanceof ContainerScreen)));
 			s.add(closeScreens());
 		}
 		s.add(new Step("Checking supplies") {
@@ -888,7 +887,7 @@ public final class Factory {
 	static Step closeScreens() {
 		return new Step("Closing") {
 			Status run(Minecraft mc) {
-				if (mc.screen == null || mc.screen instanceof ChatScreen) return Status.DONE; // (the chat is yours)
+				if (Ui.screen(mc) == null || Ui.screen(mc) instanceof ChatScreen) return Status.DONE; // (the chat is yours)
 				if (t > 40) return fail("A screen would not close");
 				Input.escape(mc);
 				wait = 2;
@@ -933,7 +932,7 @@ public final class Factory {
 					wait = 2;
 					return Status.RUNNING;
 				}
-				if (mc.screen == null && pauseWanted) mc.setScreen(new PauseScreen(true)); // back to the menu you had open
+				if (Ui.screen(mc) == null && pauseWanted) Ui.setScreen(mc, new PauseScreen(true)); // back to the menu you had open
 				LocalPlayer p = mc.player;
 				Vec3 pos = p.position();
 				double dist = Nav.horiz(pos, target);
@@ -1005,7 +1004,7 @@ public final class Factory {
 			List<Vec3> points;
 
 			Status run(Minecraft mc) {
-				if (mc.screen instanceof MerchantScreen ms) {
+				if (Ui.screen(mc) instanceof MerchantScreen ms) {
 					return ms.getMenu().getOffers().isEmpty() ? Status.RUNNING : Status.DONE;
 				}
 				if (screenInTheWay(mc)) return Status.RUNNING;
@@ -1046,7 +1045,7 @@ public final class Factory {
 			int face, aligned, pressedAt = -1, tries, opened = -1;
 
 			Status run(Minecraft mc) {
-				if (isIt.test(mc.screen)) {
+				if (isIt.test(Ui.screen(mc))) {
 					if (opened < 0) opened = t;
 					return t - opened >= 2 + latencyTicks(mc) ? Status.DONE : Status.RUNNING; // contents arrive just after
 				}
@@ -1124,19 +1123,19 @@ public final class Factory {
 						stringBefore = count(mc.player.getInventory(), s -> s.is(Items.STRING));
 						// the "/" key opens chat with the slash typed; if it's unbound, the chat key and type the slash
 						typeSlash = mc.options.keyCommand.isUnbound();
-						KeyMapping.click(KeyBindingHelper.getBoundKeyOf(typeSlash ? mc.options.keyChat : mc.options.keyCommand));
+						KeyMapping.click(Ui.boundKey(typeSlash ? mc.options.keyChat : mc.options.keyCommand));
 						phase = 1;
 					}
 					case 1 -> {
-						if (mc.screen instanceof ChatScreen cs) {
-							for (char c : ((typeSlash ? "/" : "") + cmd).toCharArray()) cs.charTyped(new CharacterEvent(c, 0));
+						if (Ui.screen(mc) instanceof ChatScreen cs) {
+							for (char c : ((typeSlash ? "/" : "") + cmd).toCharArray()) Ui.type(cs, c);
 							phase = 2;
 						} else if (t > 40) {
 							return fail("The chat didn't open");
 						}
 					}
 					case 2 -> {
-						if (mc.screen instanceof ChatScreen cs) Input.key(cs, GLFW.GLFW_KEY_ENTER);
+						if (Ui.screen(mc) instanceof ChatScreen cs) Input.key(cs, GLFW.GLFW_KEY_ENTER);
 						lastCommandMs = now;
 						phase = 3;
 						wait = 5;
@@ -1161,7 +1160,7 @@ public final class Factory {
 	static Step take(Predicate<ItemStack> pred, int amount) {
 		return new Step("Taking from a chest") {
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof ContainerScreen cs)) return Status.DONE;
+				if (!(Ui.screen(mc) instanceof ContainerScreen cs)) return Status.DONE;
 				Inventory inv = mc.player.getInventory();
 				if (count(inv, pred) >= amount) return Status.DONE;
 				ChestMenu menu = cs.getMenu();
@@ -1187,7 +1186,7 @@ public final class Factory {
 			int clicks;
 
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof ContainerScreen cs)) return fail("The chest closed");
+				if (!(Ui.screen(mc) instanceof ContainerScreen cs)) return fail("The chest closed");
 				Inventory inv = mc.player.getInventory();
 				if (before == null) before = finishedCounts(inv, kits);
 				for (int i = 0; i < 36; i++) {
@@ -1230,7 +1229,7 @@ public final class Factory {
 			int phase, ingredient, before, placedFrom = -1;
 
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof CraftingScreen cs)) return fail("The crafting table closed");
+				if (!(Ui.screen(mc) instanceof CraftingScreen cs)) return fail("The crafting table closed");
 				CraftingMenu menu = cs.getMenu();
 				Inventory inv = mc.player.getInventory();
 				List<Slot> grid = menu.getInputGridSlots();
@@ -1318,7 +1317,7 @@ public final class Factory {
 	static Step grind(Predicate<ItemStack> needs) {
 		return new Step("Grinding off clashing enchantments") {
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof net.minecraft.client.gui.screens.inventory.GrindstoneScreen gs)) return fail("The grindstone closed");
+				if (!(Ui.screen(mc) instanceof net.minecraft.client.gui.screens.inventory.GrindstoneScreen gs)) return fail("The grindstone closed");
 				var menu = gs.getMenu();
 				Inventory inv = mc.player.getInventory();
 				if (!menu.getSlot(2).getItem().isEmpty()) {
@@ -1354,7 +1353,7 @@ public final class Factory {
 			final Set<Integer> tried = new HashSet<>();
 
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof ContainerScreen cs)) return Status.DONE;
+				if (!(Ui.screen(mc) instanceof ContainerScreen cs)) return Status.DONE;
 				Inventory inv = mc.player.getInventory();
 				int have = count(inv, what);
 				for (int i = 0; i < 36; i++) {
@@ -1378,7 +1377,7 @@ public final class Factory {
 			int phase, used, rounds, waited;
 
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof CraftingScreen cs)) return fail("The crafting table closed");
+				if (!(Ui.screen(mc) instanceof CraftingScreen cs)) return fail("The crafting table closed");
 				CraftingMenu menu = cs.getMenu();
 				Inventory inv = mc.player.getInventory();
 				List<Slot> grid = menu.getInputGridSlots();
@@ -1472,7 +1471,7 @@ public final class Factory {
 
 			Status run(Minecraft mc) {
 				Inventory inv = mc.player.getInventory();
-				if (!(mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is)) {
+				if (!(Ui.screen(mc) instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is)) {
 					if (count(inv, what) == 0) {
 						failures = 0;
 						return Status.DONE;
@@ -1485,7 +1484,7 @@ public final class Factory {
 					}
 					if (++aligned < 2) return Status.RUNNING;
 					if (++opened > 5) return fail("The inventory didn't open");
-					KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyInventory));
+					KeyMapping.click(Ui.boundKey(mc.options.keyInventory));
 					wait = 4 + latencyTicks(mc);
 					return Status.RUNNING;
 				}
@@ -1752,7 +1751,7 @@ public final class Factory {
 	static Step record(UUID uuid) {
 		return new Step("Reading trades") {
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof MerchantScreen ms)) return fail("The trading screen closed");
+				if (!(Ui.screen(mc) instanceof MerchantScreen ms)) return fail("The trading screen closed");
 				Entity e = entity(mc, uuid);
 				if (!(e instanceof Villager v)) return fail("Villager gone");
 				MerchantOffers offers = ms.getMenu().getOffers();
@@ -1802,7 +1801,7 @@ public final class Factory {
 			}
 
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof MerchantScreen ms)) return fail("The trading screen closed");
+				if (!(Ui.screen(mc) instanceof MerchantScreen ms)) return fail("The trading screen closed");
 				MerchantMenu menu = ms.getMenu();
 				Inventory inv = mc.player.getInventory();
 				if (sentState >= 0) {
@@ -1905,7 +1904,7 @@ public final class Factory {
 			}
 
 			Status run(Minecraft mc) {
-				if (!(mc.screen instanceof MerchantScreen ms)) return fail("The trading screen closed");
+				if (!(Ui.screen(mc) instanceof MerchantScreen ms)) return fail("The trading screen closed");
 				MerchantMenu menu = ms.getMenu();
 				Inventory inv = mc.player.getInventory();
 				int emeralds = count(inv, s -> s.is(Items.EMERALD));
@@ -2007,7 +2006,7 @@ public final class Factory {
 
 			Status run(Minecraft mc) {
 				if (!started) {
-					if (!(mc.screen instanceof AnvilScreen)) return fail("The anvil closed");
+					if (!(Ui.screen(mc) instanceof AnvilScreen)) return fail("The anvil closed");
 					if (t < 3) return Status.RUNNING; // the panel's first refresh
 					ItemQueue.ENTRIES.clear();
 					Inventory inv = mc.player.getInventory();
@@ -2056,13 +2055,13 @@ public final class Factory {
 					if (i < 9) hot = i;
 					else main = i;
 				}
-				boolean onCursor = mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen cur && isAnvilItem(cur.getMenu().getCarried());
+				boolean onCursor = Ui.screen(mc) instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen cur && isAnvilItem(cur.getMenu().getCarried());
 				if (hot < 0 && main < 0 && !onCursor) return fail("No spare anvil in the inventory");
 				if (hot < 0 || onCursor) {
 					// open the inventory and swap it into the last hotbar slot: pick up, click the hotbar slot, put the other item back
-					if (!(mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is)) {
+					if (!(Ui.screen(mc) instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is)) {
 						if (screenInTheWay(mc)) return Status.RUNNING;
-						KeyMapping.click(KeyBindingHelper.getBoundKeyOf(mc.options.keyInventory));
+						KeyMapping.click(Ui.boundKey(mc.options.keyInventory));
 						wait = 3;
 						return Status.RUNNING;
 					}
@@ -2074,8 +2073,8 @@ public final class Factory {
 					wait = gap(mc);
 					return Status.RUNNING;
 				}
-				if (mc.screen != null) {
-					if (mc.screen instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is && !is.getMenu().getCarried().isEmpty()) {
+				if (Ui.screen(mc) != null) {
+					if (Ui.screen(mc) instanceof net.minecraft.client.gui.screens.inventory.InventoryScreen is && !is.getMenu().getCarried().isEmpty()) {
 						Input.clickSlot(mc, emptyMenuSlot(is.getMenu(), inv), 0, false);
 						wait = gap(mc);
 						return Status.RUNNING;
