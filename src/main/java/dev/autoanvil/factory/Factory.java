@@ -104,6 +104,7 @@ public final class Factory {
 		 */
 		boolean screenInTheWay(Minecraft mc) {
 			if (mc.screen == null) return false;
+			if (mc.screen instanceof PauseScreen) closedPause = true;
 			if (mc.screen instanceof ChatScreen cs && cs.input != null && !cs.input.getValue().isEmpty()) {
 				status = "Waiting for you to send or close the chat";
 				return true;
@@ -153,6 +154,9 @@ public final class Factory {
 	private static final Set<String> toldCrafting = new HashSet<>();
 	private static final Set<String> toldGrinding = new HashSet<>();
 	public static int ground, packed, thrownEmeralds, deferred;
+	/** You had the pause menu open: it comes back after the factory has closed it to click something. */
+	public static boolean pauseWanted;
+	private static boolean lastWasPause, closedPause;
 	private static final Set<String> deferredSay = new HashSet<>();
 	/** Every decision made, in order (the test reads it). */
 	public static final List<String> decisions = new ArrayList<>();
@@ -183,6 +187,8 @@ public final class Factory {
 
 	public static void start(Minecraft mc, boolean survey) {
 		if (running) return;
+		mc.mouseHandler.releaseMouse(); // the cursor stays yours while it runs (it never grabs it)
+		pauseWanted = mc.screen instanceof PauseScreen;
 		if (cfg.base == null) {
 			say("Mark the base first: stand where you can reach the anvil, crafting table and chests and type /kitfactory base");
 			return;
@@ -216,7 +222,7 @@ public final class Factory {
 				if (left <= 0) continue;
 				if (sb.length() > 0) sb.append(", ");
 				sb.append(left).append(' ').append(new ItemStack(Kit.item(en.getKey())).getHoverName().getString())
-						.append(cfg.buy.contains(en.getKey()) ? " (buy)" : " (craft)");
+						.append(" (").append(cfg.source(en.getKey())).append(")");
 			}
 			say("Started: " + (sb.length() == 0 ? "nothing left to make (/kitfactory items)" : sb) + ". Esc stops.");
 		}
@@ -257,10 +263,11 @@ public final class Factory {
 			stop("Left the world.");
 			return;
 		}
-		if (mc.screen instanceof PauseScreen) {
-			stop("Stopped (Esc).");
-			return;
-		}
+		// the pause menu doesn't stop it (it has a Stop button): it's closed for each click in the world and opened again
+		if (mc.screen instanceof PauseScreen) pauseWanted = true;
+		else if (lastWasPause && mc.screen == null && !closedPause) pauseWanted = false; // closed by you
+		lastWasPause = mc.screen instanceof PauseScreen;
+		closedPause = false;
 		if (mc.player.isDeadOrDying()) {
 			stop("You died.");
 			return;
@@ -490,7 +497,15 @@ public final class Factory {
 					return;
 				}
 			}
-			boolean buys = cfg.buy.contains(typeId);
+			String source = cfg.source(typeId);
+			boolean buys = source.equals("buy");
+			if (source.equals("take")) {
+				// ready-made in the input chest: take the batch out (it only gets enchanted here)
+				Item made = type;
+				var madeKit = kit;
+				fetch(mc, typeId, new ItemStack(type).getHoverName().getString(), x -> x.is(made) && x.getCount() == 1 && !Kit.finished(x, madeKit), want, sig);
+				return;
+			}
 			Gear gear = buys ? bestGear(mc, type, kit) : null;
 			if (buys && gear == null) {
 				String name = new ItemStack(type).getHoverName().getString();
@@ -565,10 +580,10 @@ public final class Factory {
 				stop("No crafting recipe for " + new ItemStack(type).getHoverName().getString() + ": set it to Buy in /kitfactory items.");
 				return;
 			}
-			for (Item ing : r.ingredients()) {
+			for (Kit.Ing ing : r.ingredients()) {
 				int need = r.count(ing) * want;
-				if (count(inv, s -> s.is(ing)) < need) {
-					fetch(mc, Kit.id(ing), s -> s.is(ing), need, sig);
+				if (count(inv, ing::matches) < need) {
+					fetch(mc, ing.key(), ing.name(), ing::matches, need, sig);
 					return;
 				}
 			}
@@ -579,11 +594,12 @@ public final class Factory {
 			}
 			int n = want;
 			List<Step> s = new ArrayList<>(List.of(walkTo(cfg.baseVec(), "Walking to the base"),
-					openBlock(table, "crafting table", x -> x instanceof CraftingScreen),
-					craft(r, n),
-					closeScreens()));
+					openBlock(table, "crafting table", x -> x instanceof CraftingScreen)));
+			if (r.oneAtATime()) for (int i = 0; i < n; i++) s.add(craft(r, 1));
+			else s.add(craft(r, n));
+			s.add(closeScreens());
 			// what's left of the materials goes back in the input chest, and the plain books for the batch come out
-			Predicate<ItemStack> material = x -> r.ingredients().contains(x.getItem());
+			Predicate<ItemStack> material = r::uses;
 			List<ItemStack> fresh = new ArrayList<>();
 			for (int i = 0; i < n; i++) fresh.add(new ItemStack(type));
 			int books = plainBooksFor(mc, kit, fresh);
@@ -722,8 +738,12 @@ public final class Factory {
 
 	/** Take something from the input chests (all of them, stopping once there is enough). */
 	private static void fetch(Minecraft mc, String what, Predicate<ItemStack> pred, int amount, long sig) {
+		fetch(mc, what, TradeBook.itemName(what.contains(":") ? what : "minecraft:" + what), pred, amount, sig);
+	}
+
+	private static void fetch(Minecraft mc, String what, String name, Predicate<ItemStack> pred, int amount, long sig) {
 		if (exhausted.contains(what)) {
-			stop("Out of " + TradeBook.itemName(what.contains(":") ? what : "minecraft:" + what) + ": put more in an input chest and start again.");
+			stop("Out of " + name + ": put more in an input chest and start again.");
 			return;
 		}
 		if (cfg.inputChests.isEmpty()) {
@@ -910,6 +930,7 @@ public final class Factory {
 					wait = 2;
 					return Status.RUNNING;
 				}
+				if (mc.screen == null && pauseWanted) mc.setScreen(new PauseScreen(true)); // back to the menu you had open
 				LocalPlayer p = mc.player;
 				Vec3 pos = p.position();
 				double dist = Nav.horiz(pos, target);
@@ -1216,13 +1237,13 @@ public final class Factory {
 					phase = 1;
 				}
 				if (phase == 1) {
-					List<Item> ings = r.ingredients();
+					List<Kit.Ing> ings = r.ingredients();
 					if (ingredient >= ings.size()) {
 						if (!carried.isEmpty()) return putBack(mc, menu, inv);
 						phase = 2;
 						return Status.RUNNING;
 					}
-					Item ing = ings.get(ingredient);
+					Kit.Ing ing = ings.get(ingredient);
 					Slot target = null;
 					for (int cell : r.cells(ing)) {
 						Slot g = grid.get(cell);
@@ -1238,15 +1259,15 @@ public final class Factory {
 					}
 					if (carried.isEmpty()) {
 						for (int i = 0; i < 36; i++) {
-							if (!inv.getItem(i).is(ing)) continue;
+							if (!ing.matches(inv.getItem(i))) continue;
 							placedFrom = ItemQueue.menuSlot(menu, inv, i);
 							Input.clickSlot(mc, placedFrom, 0, false); // pick up the stack
 							wait = gap(mc);
 							return Status.RUNNING;
 						}
-						return fail("Ran out of " + new ItemStack(ing).getHoverName().getString() + " while crafting");
+						return fail("Ran out of " + ing.name() + " while crafting");
 					}
-					if (!carried.is(ing)) return putBack(mc, menu, inv);
+					if (!ing.matches(carried)) return putBack(mc, menu, inv);
 					Input.clickSlot(mc, target.index, 1, false); // right click: one item
 					wait = gap(mc);
 					return Status.RUNNING;
@@ -1572,12 +1593,13 @@ public final class Factory {
 	 * a slot each for the emeralds being spent and the plain books.
 	 */
 	static int batchFits(Minecraft mc, Inventory inv, Item type, Map<Holder<Enchantment>, Integer> kit, int hi, List<String> taken) {
-		boolean crafted = !cfg.buy.contains(Kit.id(type));
+		boolean crafted = cfg.source(Kit.id(type)).equals("craft");
+		Kit.Recipe recipe = Kit.recipe(type);
 		int other = 0;
 		Map<String, Integer> names = new LinkedHashMap<>();
 		for (int i = 0; i < 36; i++) {
 			ItemStack s = inv.getItem(i);
-			if (s.isEmpty() || s.is(Items.EMERALD) || plainBook(s) || crafted && (s.is(Items.DIAMOND) || s.is(Items.STICK))) continue;
+			if (s.isEmpty() || s.is(Items.EMERALD) || plainBook(s) || crafted && recipe != null && recipe.uses(s)) continue;
 			boolean kitBook = false;
 			if (s.is(Items.ENCHANTED_BOOK)) for (var en : kit.entrySet()) kitBook |= Kit.bookHas(s, en.getKey(), en.getValue());
 			if (kitBook) continue;

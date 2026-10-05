@@ -85,6 +85,9 @@ final class FactoryTest {
 		boolean brokeAnvil;
 		int renderDistance, strafeTicks, blocksBefore;
 		String xpFisher;
+		BlockPos input2;
+		int enchPhase, enchAt, grabbedTicks;
+		boolean pauseOpened, sawOtherScreen, pauseBack, stopButton;
 		int chatPhase, chatAt, chatWalkTicks, chatMoveTicks, decisionsAtChat;
 		boolean pauseSeen, typedLeftAlone, junked;
 		int decisionsBefore;
@@ -213,6 +216,8 @@ final class FactoryTest {
 					AutoAnvil.CONFIG = new Config();
 					cmd(mc, "time set noon");
 					cmd(mc, "gamerule advance_time false");
+					// open to LAN, like a server: the pause menu doesn't pause the game
+					mc.getSingleplayerServer().publishServer(GameType.SURVIVAL, false, net.minecraft.util.HttpUtil.getAvailablePort());
 					y = server(mc, () -> mc.getSingleplayerServer().overworld().getHeight(Heightmap.Types.MOTION_BLOCKING, 0, 0));
 					anvil = new BlockPos(-1, y, 2);
 					table = new BlockPos(0, y, 2);
@@ -592,6 +597,111 @@ final class FactoryTest {
 					check(late.contains("string trade") && late.indexOf("string trade") < late.indexOf("xp trade") || late.contains("string trade") && !late.contains("xp trade"),
 							"emeralds for the pickaxe books came from the other fisherman, kept (" + late + ")");
 					check(emeraldBlocks(mc) == blocksBefore, "drop mode: no blocks put in or taken from the chest (" + emeraldBlocks(mc) + " vs " + blocksBefore + ")");
+					next();
+				}
+				case 12 -> { // any item: a shield crafted from mixed planks, a bow taken ready-made, from a second input chest
+					if (in() == 1) server(mc, () -> {
+						ServerPlayer sp = mc.getSingleplayerServer().getPlayerList().getPlayer(mc.player.getUUID());
+						for (int i = 0; i < 36; i++) if (sp.getInventory().getItem(i).is(Items.COBBLESTONE)) sp.getInventory().setItem(i, ItemStack.EMPTY);
+						sp.inventoryMenu.broadcastChanges();
+						ServerLevel l = mc.getSingleplayerServer().overworld();
+						input2 = new BlockPos(2, y, 2);
+						l.setBlock(input2, Blocks.CHEST.defaultBlockState(), 3);
+						Container c = (Container) l.getBlockEntity(input2);
+						c.setItem(0, new ItemStack(Items.OAK_PLANKS, 3));
+						c.setItem(1, new ItemStack(Items.SPRUCE_PLANKS, 3));
+						c.setItem(2, new ItemStack(Items.IRON_INGOT, 1));
+						c.setItem(3, new ItemStack(Items.BOW));
+						return null;
+					});
+					if (in() == 5) look(mc, input2);
+					if (in() == 8) cmd(mc, "kitfactory chest input");
+					if (in() == 10) {
+						cmd(mc, "kitfactory set all 0");
+						cmd(mc, "kitfactory add shield 1");
+						cmd(mc, "kitfactory take bow 1");
+					}
+					if (in() < 15) return;
+					check(Factory.cfg.inputChests.size() == 2, "second input chest marked");
+					check(Factory.cfg.targets.getOrDefault("minecraft:shield", 0) == 1 && Factory.cfg.source("minecraft:shield").equals("craft")
+							&& Factory.cfg.targets.getOrDefault("minecraft:bow", 0) == 1 && Factory.cfg.source("minecraft:bow").equals("take"),
+							"'/kitfactory add shield 1' (crafted: nobody sells one) and '/kitfactory take bow 1' (ready-made from the chest)");
+					cmd(mc, "kitfactory items");
+					next();
+				}
+				case 13 -> { // the shield's Enchants button: untick Mending
+					if (mc.screen instanceof ItemsScreen is && in() > 20 && enchPhase == 0) {
+						for (int i = 0; i < 12; i++) is.mouseScrolled(0, 0, 0, -1); // the new items are at the bottom of the list
+						var b = is.enchantsButton("minecraft:shield");
+						check(b != null, "items screen has an Enchants button for the shield");
+						if (b == null) {
+							finish(mc);
+							return;
+						}
+						Input.click(is, b.getX() + b.getWidth() / 2.0, b.getY() + b.getHeight() / 2.0, 0, false);
+						enchPhase = 1;
+						enchAt = in();
+						return;
+					}
+					if (enchPhase == 1 && in() - enchAt > 10) {
+						if (!(mc.screen instanceof dev.autoanvil.factory.EnchantsScreen es)) {
+							check(false, "Enchants opens the enchantment list");
+							finish(mc);
+							return;
+						}
+						boolean before = es.isOn("minecraft:mending");
+						double[] box = es.boxAt("minecraft:mending");
+						if (box != null) Input.click(es, box[0], box[1], 0, false);
+						check(before && !es.isOn("minecraft:mending") && es.isOn("minecraft:unbreaking")
+										&& Boolean.FALSE.equals(AutoAnvil.CONFIG.profile("shield").get("minecraft:mending")),
+								"clicking Mending in the shield's list unticks it (saved for shields)");
+						es.onClose();
+						enchPhase = 2;
+						enchAt = in();
+						return;
+					}
+					if (enchPhase == 2 && in() - enchAt > 5) {
+						if (mc.screen != null) mc.screen.onClose();
+						next();
+					}
+				}
+				case 14 -> { // run it with the pause menu open part of the time, the window in focus: the cursor is never taken
+					if (in() == 5) mc.setWindowActive(true);
+					if (in() == 10) cmd(mc, "kitfactory start");
+					if (in() < 12) return;
+					if (Factory.running() && mc.mouseHandler.isMouseGrabbed()) grabbedTicks++;
+					if (!pauseOpened && Factory.running() && mc.screen == null && Factory.status.startsWith("Walking")) {
+						mc.setScreen(new net.minecraft.client.gui.screens.PauseScreen(true));
+						pauseOpened = true;
+					}
+					if (pauseOpened && mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen ps) {
+						if (sawOtherScreen) pauseBack = true;
+						for (var w : net.fabricmc.fabric.api.client.screen.v1.Screens.getButtons(ps)) {
+							if (w.getMessage().getString().equals("Stop Kit Factory")) stopButton = true;
+						}
+					} else if (pauseOpened && mc.screen != null) {
+						sawOtherScreen = true;
+					}
+					if (Factory.running() && in() < 20 * 60 * 6) return;
+					if (mc.screen != null) mc.setScreen(null);
+					check(Factory.lastMessage.startsWith("All done"), "shield and bow: factory finishes with the pause menu open part of the time (" + Factory.lastMessage + ")");
+					check(pauseBack && stopButton, "pause menu came back after the factory's clicks, with a Stop Kit Factory button");
+					check(grabbedTicks == 0, "the cursor was never taken while it ran (" + grabbedTicks + " ticks)");
+					List<ItemStack> out = server(mc, () -> {
+						List<ItemStack> l = new ArrayList<>();
+						Container c = (Container) mc.getSingleplayerServer().overworld().getBlockEntity(output);
+						for (int i = 0; i < c.getContainerSize(); i++) if (!c.getItem(i).isEmpty()) l.add(c.getItem(i).copy());
+						return l;
+					});
+					int shields = 0, bows = 0;
+					for (ItemStack s : out) {
+						if (s.is(Items.SHIELD)) AutoAnvil.LOGGER.info("[factorytest] output: {}", describe(s));
+						if (s.is(Items.BOW)) AutoAnvil.LOGGER.info("[factorytest] output: {}", describe(s));
+						if (s.is(Items.SHIELD) && lvl(mc, s, Enchantments.UNBREAKING) == 3 && lvl(mc, s, Enchantments.MENDING) == 0) shields++;
+						if (s.is(Items.BOW) && lvl(mc, s, Enchantments.UNBREAKING) == 3 && lvl(mc, s, Enchantments.MENDING) == 1) bows++;
+					}
+					check(shields == 1, "output chest: a shield crafted from oak + spruce planks and iron, Unbreaking III and no Mending (" + shields + ")");
+					check(bows == 1, "output chest: the bow from the chest, with Unbreaking III and Mending (" + bows + ")");
 					finish(mc);
 				}
 				default -> {

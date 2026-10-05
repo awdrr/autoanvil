@@ -72,6 +72,8 @@ public final class FactoryConfig {
 	 * grindstone). Everything else in {@link #targets} is crafted from the input chest.
 	 */
 	public List<String> buy = defaultBuy();
+	/** Taken ready-made from the input chest (shields, netherite gear, anything): only enchanted here. */
+	public List<String> take = new ArrayList<>();
 	/** How many to make, in this order. */
 	public Map<String, Integer> targets = defaultTargets();
 	/** How many are finished and in the output chests. */
@@ -102,11 +104,35 @@ public final class FactoryConfig {
 	}
 
 	public int batchMin(String id) {
-		return Math.max(1, batchMin.getOrDefault(id, 1));
+		return Math.max(1, batchMin.getOrDefault(id, armor(id) ? 3 : id.endsWith("_pickaxe") ? 3 : 2));
 	}
 
 	public int batchMax(String id) {
-		return Math.max(batchMin(id), batchMax.getOrDefault(id, 4));
+		return Math.max(batchMin(id), batchMax.getOrDefault(id, armor(id) ? 3 : 4));
+	}
+
+	static boolean armor(String id) {
+		return id.endsWith("_helmet") || id.endsWith("_chestplate") || id.endsWith("_leggings") || id.endsWith("_boots");
+	}
+
+	/** Where an item comes from: "buy" (a villager), "craft" (the crafting table) or "take" (the input chest, ready-made). */
+	public String source(String id) {
+		if (take.contains(id)) return "take";
+		if (buy.contains(id)) return "buy";
+		return Kit.recipe(Kit.item(id)) != null ? "craft" : "take";
+	}
+
+	public void setSource(String id, String src) {
+		buy.remove(id);
+		take.remove(id);
+		if (src.equals("buy")) buy.add(id);
+		if (src.equals("take")) take.add(id);
+	}
+
+	/** For an item just added: bought if a villager in the hall sells it, else crafted if it can be, else from the chest. */
+	public String defaultSource(String id) {
+		for (TradeBook.Trader t : TradeBook.get().traders) for (TradeBook.Offer o : t.offers) if (o.enabled && o.result.equals(id)) return "buy";
+		return Kit.recipe(Kit.item(id)) != null ? "craft" : "take";
 	}
 
 	static Map<String, Integer> defaultTargets() {
@@ -115,13 +141,27 @@ public final class FactoryConfig {
 		return m;
 	}
 
-	/** "pickaxe", "diamond_pickaxe" or "minecraft:diamond_pickaxe" to the item id; null if it isn't one of {@link #ITEMS}. */
+	/**
+	 * An item name to its id: "shield", "minecraft:shield", and for the diamond kit "pickaxe" too. Null if there's no
+	 * such item, or it can't be enchanted.
+	 */
 	public static String resolve(String name) {
 		String n = name.toLowerCase(java.util.Locale.ROOT);
-		for (String id : ITEMS) {
-			if (id.equals(n) || id.equals("minecraft:" + n) || id.equals("minecraft:diamond_" + n)) return id;
-		}
-		return null;
+		for (String id : ITEMS) if (id.equals("minecraft:diamond_" + n)) return id;
+		var rl = net.minecraft.resources.Identifier.tryParse(n.contains(":") ? n : "minecraft:" + n);
+		if (rl == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(rl)) return null;
+		var item = net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(rl);
+		return enchantable(item) ? rl.toString() : null;
+	}
+
+	/** Items that take at least one enchantment (what the factory can make). */
+	public static boolean enchantable(net.minecraft.world.item.Item item) {
+		var stack = new net.minecraft.world.item.ItemStack(item);
+		if (stack.isEmpty() || item == net.minecraft.world.item.Items.BOOK || item == net.minecraft.world.item.Items.ENCHANTED_BOOK) return false;
+		var mc = net.minecraft.client.Minecraft.getInstance();
+		if (mc.level == null) return stack.isEnchantable();
+		for (var e : dev.autoanvil.Catalog.all(mc.level.registryAccess())) if (e.value().canEnchant(stack)) return true;
+		return false;
 	}
 
 	public Vec3 baseVec() {
@@ -161,11 +201,10 @@ public final class FactoryConfig {
 		if (c.targets == null || c.targets.isEmpty()) c.targets = defaultTargets();
 		if (c.done == null) c.done = new LinkedHashMap<>();
 		if (c.buy == null) c.buy = defaultBuy();
-		c.targets.keySet().retainAll(ITEMS);
 		if (c.batchMin == null) c.batchMin = batch(3, 2, 3);
 		if (c.batchMax == null) c.batchMax = batch(3, 4, 4);
 		if (c.spareEmeralds == null) c.spareEmeralds = "chest";
-		for (String id : ITEMS) c.targets.putIfAbsent(id, 0);
+		if (c.take == null) c.take = new ArrayList<>();
 		c.save();
 		return c;
 	}

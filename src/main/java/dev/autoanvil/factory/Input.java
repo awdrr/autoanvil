@@ -89,11 +89,12 @@ public final class Input {
 	}
 
 	/**
-	 * Nothing open but maybe the chat: the chat is only on the player's own screen (the server never knows it's
-	 * open), and it's how you tab out, so walking and turning carry on under it. Never in any other screen.
+	 * Nothing open but maybe the chat or the pause menu: those are only on the player's own screen (the server never
+	 * knows), and they're how you tab out, so walking and turning carry on under them. Never in any other screen.
 	 */
 	public static boolean free(Minecraft mc) {
-		return mc.screen == null || mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen;
+		return mc.screen == null || mc.screen instanceof net.minecraft.client.gui.screens.ChatScreen
+				|| mc.screen instanceof net.minecraft.client.gui.screens.PauseScreen;
 	}
 
 	/** Holds or releases the forward key. Refused while a screen is open: no walking in menus. */

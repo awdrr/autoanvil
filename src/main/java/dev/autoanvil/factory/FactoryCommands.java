@@ -27,9 +27,16 @@ public final class FactoryCommands {
 	/** Screens can't be opened from inside the chat that ran the command; this one opens next tick. */
 	public static java.util.function.Supplier<net.minecraft.client.gui.screens.Screen> openNextTick;
 
+	/** Every item that takes enchantments (shield, bow, netherite_sword...), and the diamond kit's short names. */
 	private static final com.mojang.brigadier.suggestion.SuggestionProvider<FabricClientCommandSource> ITEMS = (c, b) -> {
-		for (String id : FactoryConfig.ITEMS) b.suggest(id.replace("minecraft:diamond_", ""));
-		return b.buildFuture();
+		List<String> names = new ArrayList<>();
+		for (String id : FactoryConfig.ITEMS) names.add(id.replace("minecraft:diamond_", ""));
+		for (var item : net.minecraft.core.registries.BuiltInRegistries.ITEM) {
+			if (!FactoryConfig.enchantable(item)) continue;
+			var key = net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(item);
+			if (key.getNamespace().equals("minecraft")) names.add(key.getPath());
+		}
+		return net.minecraft.commands.SharedSuggestionProvider.suggest(names, b);
 	};
 
 	public static void register() {
@@ -42,13 +49,30 @@ public final class FactoryCommands {
 				.then(ClientCommandManager.literal("trades").executes(c -> run(c, () -> openNextTick = () -> new TradesScreen(null))))
 				.then(ClientCommandManager.literal("items").executes(c -> run(c, () -> openNextTick = () -> new ItemsScreen(null))))
 				.then(ClientCommandManager.literal("buy")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, true, -1))
+						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "buy", -1))
 								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
-										.executes(c -> source(c, true, IntegerArgumentType.getInteger(c, "count"))))))
+										.executes(c -> source(c, "buy", IntegerArgumentType.getInteger(c, "count"))))))
 				.then(ClientCommandManager.literal("craft")
-						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, false, -1))
+						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "craft", -1))
 								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
-										.executes(c -> source(c, false, IntegerArgumentType.getInteger(c, "count"))))))
+										.executes(c -> source(c, "craft", IntegerArgumentType.getInteger(c, "count"))))))
+				.then(ClientCommandManager.literal("take")
+						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, "take", -1))
+								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
+										.executes(c -> source(c, "take", IntegerArgumentType.getInteger(c, "count"))))))
+				.then(ClientCommandManager.literal("add")
+						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> source(c, null, 27))
+								.then(ClientCommandManager.argument("count", IntegerArgumentType.integer(0, 10000))
+										.executes(c -> source(c, null, IntegerArgumentType.getInteger(c, "count"))))))
+				.then(ClientCommandManager.literal("remove")
+						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(FactoryCommands::remove)))
+				.then(ClientCommandManager.literal("enchants")
+						.then(ClientCommandManager.argument("item", StringArgumentType.word()).suggests(ITEMS).executes(c -> {
+							String id = FactoryConfig.resolve(StringArgumentType.getString(c, "item"));
+							if (id == null) return notAnItem(c);
+							openNextTick = () -> new EnchantsScreen(null, id);
+							return 1;
+						})))
 				.then(ClientCommandManager.literal("base").executes(FactoryCommands::base))
 				.then(ClientCommandManager.literal("path")
 						.then(ClientCommandManager.literal("add").executes(FactoryCommands::pathAdd))
@@ -128,7 +152,8 @@ public final class FactoryCommands {
 				" 5. /kitfactory trades  - check / edit prices",
 				" 6. /kitfactory items  - how many of each, bought or crafted (27 each by default), then /kitfactory start",
 				"Also: stop, status, buy <item> [n], craft <item> [n], set <item|all> <n>, reset, forget, string <command>,",
-				"  dropspot (where to throw spare emerald blocks), spare chest|drop, fisherman xp|clear (look at it)"};
+				"  dropspot (where to throw spare emerald blocks), spare chest|drop, fisherman xp|clear (look at it),",
+				"  add <item> [n] (any item: shield, bow...), remove <item>, take <item> [n] (ready-made from the chest), enchants <item>"};
 		for (String l : lines) c.getSource().sendFeedback(Component.literal(l));
 		return 1;
 	}
@@ -211,24 +236,45 @@ public final class FactoryCommands {
 	}
 
 	private static int notAnItem(CommandContext<FabricClientCommandSource> c) {
-		List<String> names = new ArrayList<>();
-		for (String id : FactoryConfig.ITEMS) names.add(id.replace("minecraft:diamond_", ""));
-		c.getSource().sendError(Component.literal("Not one of: " + String.join(", ", names)));
+		c.getSource().sendError(Component.literal("\"" + StringArgumentType.getString(c, "item") + "\" isn't an item that takes enchantments (try shield, bow, netherite_sword)."));
 		return 0;
 	}
 
-	/** buy / craft: where an item comes from, and optionally how many to make. */
-	private static int source(CommandContext<FabricClientCommandSource> c, boolean buy, int n) {
+	private static int remove(CommandContext<FabricClientCommandSource> c) {
+		String id = FactoryConfig.resolve(StringArgumentType.getString(c, "item"));
+		if (id == null || Factory.cfg.targets.remove(id) == null) return notAnItem(c);
+		Factory.cfg.setSource(id, "craft");
+		Factory.cfg.save();
+		c.getSource().sendFeedback(Component.literal("Not making " + new net.minecraft.world.item.ItemStack(Kit.item(id)).getHoverName().getString() + " any more."));
+		return 1;
+	}
+
+	/**
+	 * buy / craft / take / add: an item to make (any that takes enchantments), where it comes from (add: bought if a
+	 * villager here sells it, else crafted if it can be, else from the chest), and optionally how many.
+	 */
+	private static int source(CommandContext<FabricClientCommandSource> c, String src, int n) {
 		String id = FactoryConfig.resolve(StringArgumentType.getString(c, "item"));
 		if (id == null) return notAnItem(c);
 		FactoryConfig f = Factory.cfg;
-		f.buy.remove(id);
-		if (buy) f.buy.add(id);
-		if (n >= 0) f.targets.put(id, n);
-		f.save();
 		String name = new net.minecraft.world.item.ItemStack(Kit.item(id)).getHoverName().getString();
-		c.getSource().sendFeedback(Component.literal(name + ": " + f.targets.get(id) + ", " + (buy ? "bought from villagers" : "crafted from the input chest")
-				+ (f.done.getOrDefault(id, 0) > 0 ? " (" + f.done.get(id) + " done already)" : "")));
+		if ("craft".equals(src) && Kit.recipe(Kit.item(id)) == null) {
+			c.getSource().sendError(Component.literal(name + " can't be crafted at a crafting table: use buy or take (ready-made from the input chest)."));
+			return 0;
+		}
+		boolean added = !f.targets.containsKey(id);
+		f.setSource(id, src != null ? src : added ? f.defaultSource(id) : f.source(id));
+		if (n >= 0) f.targets.put(id, n);
+		else f.targets.putIfAbsent(id, 27);
+		f.save();
+		String from = switch (f.source(id)) {
+			case "buy" -> "bought from villagers";
+			case "craft" -> "crafted from materials in the input chest";
+			default -> "taken ready-made from the input chest";
+		};
+		c.getSource().sendFeedback(Component.literal(name + ": " + f.targets.get(id) + ", " + from
+				+ (f.done.getOrDefault(id, 0) > 0 ? " (" + f.done.get(id) + " done already)" : "")
+				+ (added ? ". Pick its enchantments: /kitfactory enchants " + id.replace("minecraft:", "") : "")));
 		return 1;
 	}
 
@@ -271,6 +317,7 @@ public final class FactoryCommands {
 		} else {
 			String id = FactoryConfig.resolve(item);
 			if (id == null) return notAnItem(c);
+			if (!t.containsKey(id)) Factory.cfg.setSource(id, Factory.cfg.defaultSource(id));
 			t.put(id, n);
 		}
 		Factory.cfg.save();

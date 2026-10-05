@@ -92,6 +92,13 @@ public final class AutoAnvil implements ClientModInitializer {
 		queueKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.autoanvil.queue", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_R, CATEGORY));
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(ItemQueue.ENTRIES::clear));
 		ScreenEvents.AFTER_INIT.register((client, s, w, h) -> {
+			// Esc doesn't stop the Kit Factory (it keeps going under the pause menu): this does
+			if (s instanceof net.minecraft.client.gui.screens.PauseScreen && dev.autoanvil.factory.Factory.running()) {
+				Screens.getButtons(s).add(net.minecraft.client.gui.components.Button.builder(Component.literal("Stop Kit Factory"), b -> {
+					dev.autoanvil.factory.Factory.stop("Stopped.");
+					b.visible = false;
+				}).bounds(w / 2 - 60, 6, 120, 20).build());
+			}
 			if (s instanceof AbstractContainerScreen<?> cs) {
 				ScreenKeyboardEvents.allowKeyPress(cs).register((scr, key) -> !(queueKey.matches(key) && queueHovered(cs)));
 				ScreenMouseEvents.allowMouseClick(cs).register((scr, click) -> !(queueKey.matchesMouse(click) && queueHovered(cs)));

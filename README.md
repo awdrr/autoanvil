@@ -90,10 +90,11 @@ everything on the anvil with Auto Anvil and stores the finished items in your ou
 item by default. `/kitfactory items` changes the amount per item and whether each one is bought or crafted.
 
 It only presses keys and clicks like a player would: walking, turning, right-clicking villagers and blocks,
-and clicking slots. It never walks or turns while a screen is open, except the chat (only your own screen
-shows it): walking carries on under the chat, an empty chat is closed when it needs to click something, and
-chat with something typed in it is left for you to send or close. **Tabbing out** while it runs doesn't open
-the pause menu, so it keeps going (Esc in the game still stops it). Walking to a villager, it keeps looking at
+and clicking slots. It never walks or turns while a screen is open, except the chat and the pause menu (only
+your own screen shows them): walking carries on under them. **Esc doesn't stop it**: the pause menu has a
+"Stop Kit Factory" button, and the factory closes the menu for each click in the world and opens it again after.
+It **never takes the cursor** while it runs, so you can alt-tab and use the mouse elsewhere; tabbing out doesn't
+open the pause menu either. Chat with something typed in it is left for you to send or close. Walking to a villager, it keeps looking at
 it and strafes (A/D, or W/S plus A/D) instead of turning away to walk. Where the floor between two walkway
 points is clear it cuts straight across, so a walkway that loops round the hall isn't walked all the way round.
 
@@ -145,6 +146,21 @@ the command into chat instead, which is slower.
   spear, ...). The factory makes exactly those, at the best level a librarian sells.
 - Start with an **empty inventory** and no armor in your hands.
 
+### Any item
+
+The 8 diamond kit items are on the list to start with; add anything that takes enchantments (shields, bows,
+crossbows, tridents, elytra, netherite gear, fishing rods...): hold it and click **Add held item** in
+`/kitfactory items`, or `/kitfactory add shield 27`. Each item has three ways to come in:
+
+- **Buy**: traded from a villager in the hall.
+- **Craft**: at the crafting table from materials in the input chest (armor and tools of any craftable material,
+  shields, bows, crossbows, fishing rods, shears, flint and steel, brushes, turtle helmets, maces...).
+- **Chest**: taken ready-made from the input chest (netherite gear, tridents, elytra, anything) and only
+  enchanted here.
+
+**Enchants** next to each item (or `/kitfactory enchants shield`) lists what it can take with the best level a
+librarian in the hall sells: tick what you want. The ticks are shared with the anvil panel for that kind of item.
+
 ### Setup commands
 
 ```
@@ -163,6 +179,7 @@ crafts 10 diamond pickaxes from the chest instead of buying them), `set <item|al
 Item names: helmet, chestplate, leggings, boots, sword, pickaxe, axe, spear.
 
 Also: `status`, `reset` (count from 0 again), `dropspot` / `dropspot clear`, `spare chest|drop`,
+`add <item> [n]`, `remove <item>`, `take <item> [n]` (ready-made from the chest), `enchants <item>`,
 `fisherman xp` / `fisherman clear` (look at the fisherman for levels),
 `forget` (drop all recorded trades), `string <command>` (if your server's string command has another name).
 There is also a "Start / stop Kit Factory" key in Controls (unbound by default).
