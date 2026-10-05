@@ -154,6 +154,8 @@ public final class Factory {
 	private static final Set<String> toldCrafting = new HashSet<>();
 	private static final Set<String> toldGrinding = new HashSet<>();
 	public static int ground, packed, thrownEmeralds, deferred;
+	/** Clicks buying from villagers that the server undid (logged: a sign of lag or click-speed checks). */
+	public static int corrected;
 	/** You had the pause menu open: it comes back after the factory has closed it to click something. */
 	public static boolean pauseWanted;
 	private static boolean lastWasPause, closedPause;
@@ -401,7 +403,8 @@ public final class Factory {
 			stop("No anvil marked: stand at the base and type /kitfactory base");
 			return;
 		}
-		if (!mc.level.getBlockState(anvilPos).is(BlockTags.ANVIL)) {
+		// (only where the game has the base loaded: from far down a long hall it reads as empty air)
+		if (mc.level.hasChunkAt(anvilPos) && !mc.level.getBlockState(anvilPos).is(BlockTags.ANVIL)) {
 			if (count(inv, s -> s.is(Items.ANVIL) || s.is(Items.CHIPPED_ANVIL) || s.is(Items.DAMAGED_ANVIL)) == 0) {
 				fetch(mc, "anvil", s -> s.is(Items.ANVIL), 1, sig);
 				return;
@@ -1786,12 +1789,26 @@ public final class Factory {
 	/** Buy {@code n} of a book: select the trade, take the result, put it in the inventory, repeat. */
 	static Step buy(TradeBook.Trader trader, TradeBook.Offer offer, int n, Predicate<ItemStack> isIt) {
 		return new Step("Buying " + offer.what() + " x" + n) {
-			int phase, got, sinceSelect, before;
+			int phase, got, sinceSelect, before, sentState = -1;
+
+			/**
+			 * Just clicked: the next click waits a round trip to the server, so a trade it undoes (a busy server, or one
+			 * that checks click speed) is back on screen before anything else is clicked. A click the game predicted
+			 * right gets no answer at all, so the wait is the ping, not an answer.
+			 */
+			void sent(MerchantMenu menu) {
+				sentState = menu.getStateId();
+				wait = Math.max(2, 1 + 2 * latencyTicks(mc())) + Math.max(0, dev.autoanvil.AutoAnvil.CONFIG.actionDelayTicks);
+			}
 
 			Status run(Minecraft mc) {
 				if (!(mc.screen instanceof MerchantScreen ms)) return fail("The trading screen closed");
 				MerchantMenu menu = ms.getMenu();
 				Inventory inv = mc.player.getInventory();
+				if (sentState >= 0) {
+					if (menu.getStateId() != sentState) corrected++; // the server put something back the way it had it
+					sentState = -1;
+				}
 				if (t == 1) {
 					before = count(inv, isIt);
 					// the price the villager asks today
@@ -1816,7 +1833,7 @@ public final class Factory {
 					int slot = emptyMenuSlot(menu, inv);
 					if (slot < 0) return fail("No free slot for the book");
 					Input.clickSlot(mc, slot, 0, false);
-					wait = gap(mc);
+					sent(menu);
 					return Status.RUNNING;
 				}
 				if (got >= n) {
@@ -1834,7 +1851,7 @@ public final class Factory {
 				}
 				if (phase == 1 && !result.isEmpty() && isIt.test(result)) {
 					Input.clickSlot(mc, 2, 0, false); // take one
-					wait = gap(mc);
+					sent(menu);
 					return Status.RUNNING;
 				}
 				if (phase == 1 && sinceSelect++ < 10 + latencyTicks(mc)) return Status.RUNNING;
@@ -1842,10 +1859,8 @@ public final class Factory {
 				if (sel == -1) return fail(trader.label() + " doesn't offer " + offer.what() + " any more - run /kitfactory survey");
 				phase = sel >= 0 ? 1 : 0;
 				sinceSelect = 0;
-				if (phase == 1 && !menu.getSlot(2).getItem().isEmpty() && isIt.test(menu.getSlot(2).getItem()) && roomToBuyOne(menu, inv)) {
-					Input.clickSlot(mc, 2, 0, false); // the result shows at once: take it this tick
-				}
 				wait = gap(mc);
+				if (sel >= 0) sent(menu); // the trade slots fill on the server: take the result once that's settled
 				if (t > 400) return fail("Buying took too long (" + got + "/" + n + ")");
 				return Status.RUNNING;
 			}

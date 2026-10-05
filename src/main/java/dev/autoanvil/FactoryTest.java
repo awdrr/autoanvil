@@ -235,7 +235,7 @@ final class FactoryTest {
 						in.setItem(0, new ItemStack(Items.DIAMOND, 64));
 						in.setItem(1, new ItemStack(Items.STICK, 16));
 						in.setItem(2, new ItemStack(Items.BOOK, 64));
-						in.setItem(3, new ItemStack(Items.ANVIL, 2));
+						in.setItem(3, new ItemStack(Items.ANVIL, 5)); // (anvils wear out in a test world, unlike on the server)
 						in.setItem(4, new ItemStack(Items.EMERALD_BLOCK, 2));
 						double vz = -1.5;
 						villager(l, 3.5, y, vz, VillagerProfession.LIBRARIAN,
@@ -818,6 +818,7 @@ final class FactoryTest {
 		}
 
 		void finish(Minecraft mc) {
+			AutoAnvil.LOGGER.info("[factorytest] villager-buying clicks the server undid: {}", Factory.corrected);
 			if (renderDistance > 0) mc.options.renderDistance().set(renderDistance);
 			if (failures.isEmpty()) AutoAnvil.LOGGER.info("[factorytest] PASS ({} checks)", checks);
 			else AutoAnvil.LOGGER.error("[factorytest] FAIL: {}", failures);
